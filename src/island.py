@@ -170,6 +170,7 @@ class Island:
         self.drag_paths = []          # files in the drag now under way, if any
         self.pending_drop = None      # (paths, time) let go over the island, in case macOS doesn't deliver them
         self.shelf_done = []          # results of moves finished on the worker thread, for the main loop
+        self.shelf_watch_until = 0.0  # look for items leaving the Shelf folder every tick until then
         self._icons = {}              # file icons by path
         self.event_alerts = set()     # (event id, kind) already announced
         self.seeking = None           # fraction 0..1 while the progress bar is being dragged
@@ -1015,9 +1016,17 @@ class Island:
         self.dragging_out = False
         self.shelf_press = None
         # Moved out: it has left the Shelf. Copied somewhere (an attachment, say): it is still here.
+        # The destination (Finder, usually) moves the file a moment *after* the drag is over, so
+        # looking now would still find it; sync_shelf keeps looking for the next few seconds.
+        if dropped:
+            self.shelf_watch_until = time.time() + 5.0
+        self.sync_shelf()
+
+    def sync_shelf(self):
+        """Drop from the list whatever is no longer in the Shelf folder."""
         if shelf.prune(self.settings):
             settings.save(self.settings)
-        self.refresh(time.time())
+            self.refresh(time.time())
 
     def over_drawer(self, x, y):
         return (self.mode == "expanded" and self.ext >= SHELF_W
@@ -1379,6 +1388,9 @@ class Island:
         file_drag = self.watch_file_drag(now, x, y)
         if self.shelf_done:
             self.shelf_finished()
+        # Right after a drag out, check every tick; otherwise once a second is plenty.
+        if self.settings["shelf"] and (now < self.shelf_watch_until or self.ticks % 20 == 0):
+            self.sync_shelf()
         hovered = None
         if self.menu_open:
             for which in (self.outer, self.inner):
