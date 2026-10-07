@@ -1,4 +1,4 @@
-"""Dynamic Island for the MacBook notch. Run: .venv/bin/python main.py"""
+"""Dynamic Island for the MacBook notch. Run: .venv/bin/python src/main.py"""
 import os
 import signal
 import sys

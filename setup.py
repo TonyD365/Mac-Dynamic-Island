@@ -1,15 +1,18 @@
-"""Build the universal (arm64 + x86_64) app:  .venv/bin/python setup.py py2app"""
+"""Build the universal (arm64 + x86_64) app. Run ./build.sh rather than this file directly."""
+import sys
+
 from setuptools import setup
 
-from version import VERSION
+sys.path.insert(0, "src")           # the app's modules live in src/
+from version import VERSION         # noqa: E402
 
 setup(
     name="Dynamic Island",
     version=VERSION,
-    app=["main.py"],
+    app=["src/main.py"],
     options={"py2app": {
         "arch": "universal2",
-        "iconfile": "icon.icns",              # drawn by make_icon.py
+        "iconfile": "assets/icon.icns",       # drawn by packaging/make_icon.py
         "excludes": ["tkinter"],              # the island is pure AppKit
         "plist": {
             "CFBundleName": "Dynamic Island",

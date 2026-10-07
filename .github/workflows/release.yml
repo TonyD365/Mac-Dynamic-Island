@@ -30,12 +30,12 @@ jobs:
               exit 1
             fi
             VERSION="${TAG#v}"
-            printf '"""Set by the release workflow from tag %s."""\nVERSION = "%s"\n' "$TAG" "$VERSION" > version.py
+            printf '"""Set by the release workflow from tag %s."""\nVERSION = "%s"\n' "$TAG" "$VERSION" > src/version.py
           else
             VERSION="0.0.0"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          cat version.py
+          cat src/version.py
 
       # The python.org installer is a universal2 build, which is what makes the app run natively
       # on both Apple silicon and Intel.

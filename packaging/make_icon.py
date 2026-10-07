@@ -1,4 +1,4 @@
-"""Draw the app icon and write icon.icns:  .venv/bin/python make_icon.py"""
+"""Draw the app icon and write assets/icon.png and assets/icon.icns:  .venv/bin/python packaging/make_icon.py"""
 import math
 import os
 import shutil
@@ -102,7 +102,8 @@ def draw():
 
 
 def main():
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+    os.makedirs(here, exist_ok=True)
     master = os.path.join(here, "icon.png")
     dest = Quartz.CGImageDestinationCreateWithURL(NSURL.fileURLWithPath_(master), "public.png", 1, None)
     Quartz.CGImageDestinationAddImage(dest, draw(), None)

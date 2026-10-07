@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 rm -rf build dist
-VERSION=$(.venv/bin/python -c "import version; print(version.VERSION)")
+VERSION=$(.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); import version; print(version.VERSION)")
 echo "Building version $VERSION"
 .venv/bin/python setup.py py2app > build.log 2>&1 || { tail -30 build.log; exit 1; }
 
