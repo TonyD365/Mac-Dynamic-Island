@@ -13,6 +13,8 @@ import time
 
 from AppKit import NSRunningApplication
 
+import calendar_events
+
 
 class _Addr(ctypes.Structure):
     _fields_ = [("selector", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("element", ctypes.c_uint32)]
@@ -345,6 +347,9 @@ class Monitors:
         self.ac = None
         self.music = None
         self.music_hold = 0.0    # ignore readings until then: a command was just sent
+        self.calendar = calendar_events.Calendar()
+        self.calendar_on = False # set by the island from the Calendar Events setting
+        self.event = None        # the next calendar event, when switched on and allowed
         self.errors = {}         # monitor name -> last failure
         self.volume = None
         self.muted = None
@@ -363,6 +368,7 @@ class Monitors:
         self._spawn(self._levels, 0.12)
         self._spawn(self._bluetooth, 1.0)    # frequent: a device can drop and rejoin within a couple of seconds
         self._spawn(self._stats, 3.0)
+        self._spawn(self._calendar, 30.0)
 
     def _spawn(self, fn, interval):
         def loop():
@@ -405,3 +411,6 @@ class Monitors:
         self._ticks = ticks
         self.mem = memory_used()
         self.gpu = gpu_usage()
+
+    def _calendar(self):
+        self.event = self.calendar.next_event() if self.calendar_on else None

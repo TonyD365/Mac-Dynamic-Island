@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m venv .venv
-          .venv/bin/pip install --quiet pyobjc-framework-Cocoa pyobjc-framework-Quartz
+          .venv/bin/pip install --quiet -r requirements.txt
       - name: Every file compiles
         run: .venv/bin/python -m compileall -q src tests tools packaging setup.py
       - name: Logic tests
@@ -54,7 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m venv .venv
-          .venv/bin/pip install --quiet pyobjc-framework-Cocoa pyobjc-framework-Quartz
+          .venv/bin/pip install --quiet -r requirements.txt
       - name: Check out the base branch next to the PR
         run: git worktree add "$RUNNER_TEMP/base" "origin/${{ github.base_ref }}"
       # The PR's copy of the tool measures both trees, so the two columns are comparable.

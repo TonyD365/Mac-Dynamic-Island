@@ -30,11 +30,24 @@ Click it for a ring of action buttons.
 - Alerts when a Bluetooth device connects or disconnects, and when you plug in or unplug power
 - A welcome animation when you log in or unlock
 
-**Action ring** — click the island, then scroll to turn the ring
-- Focus, Mute, Dark Mode, Keep Awake, Lock Screen, Sleep Display
-- Screenshot to clipboard, Color Picker, Downloads, Activity Monitor, Calculator
+**Two rings of buttons** — click the island
+- The **inner ring** holds categories: Time, Media, System, Tools, Files, Apps, My Buttons, and Settings.
+  Click one and its buttons fan out in an **outer ring**. Scroll over either ring to turn it.
+- Time: Focus, Timer, Stopwatch · Media: Previous, Play / Pause, Next, Mute ·
+  System: Dark Mode, Keep Awake, Lock Screen, Sleep Display · Tools: Screenshot, Color Picker, Calculator ·
+  Files: Shelf, Downloads, Desktop, Documents, Applications · Apps: Activity Monitor, System Settings, Terminal
 - Your own **custom buttons**: open an app, a file or folder, a website, or run a shell command
+- **Categories** are yours to arrange: add, rename and remove them, and drag buttons between them
 - Scroll on the island itself to change the volume
+
+**Timer, stopwatch and calendar**
+- A countdown timer with one-click presets, and a stopwatch; both count in the island
+- The next calendar event, with a heads-up ten minutes before and when it starts (off until you switch
+  it on, because it needs calendar access)
+
+**Shelf**
+- Drag files onto the island to park them, then drag them out again wherever you need them. Only the
+  files' locations are kept; nothing is copied or moved until you drop an item somewhere.
 
 **Focus modes**
 - Named modes with their own default length; you are asked how long each time you start one
@@ -69,6 +82,7 @@ macOS asks for these the first time the matching feature is used:
 | Automation (System Events) | The Dark Mode button |
 | Automation (your browser) | Website blocking during a focus mode |
 | Screen Recording | The Screenshot button |
+| Calendars | Showing the next event, once Calendar Events is switched on |
 
 The camera and microphone are never opened: the island only asks the system whether another app is
 using them.
@@ -141,13 +155,19 @@ pre-releases are ignored.
 src/                 the app
   main.py              entry point
   island.py            window, layers, animation, interaction
+  ring.py              one ring of buttons: placement, turning, hit-testing
+  menu.py              what the rings contain: buttons, categories, settings groups
+  ui.py                shared colours and animation helpers
   screen.py            finds the built-in display and the notch
   monitors.py          camera, microphone, audio, brightness, battery, Bluetooth, system stats
   actions.py           quick actions behind the ring buttons
   focus.py             focus modes and blocking
-  focus_panel.py       the drop-down under the Focus button
+  focus_panel.py       the drop-down under a ring button: focus modes, timer, shelf
   focus_editor.py      the Focus Modes window
   custom_buttons.py    custom buttons and their window
+  categories_editor.py the Categories window
+  calendar_events.py   next calendar event
+  shelf.py             files parked on the island
   backgrounds.py       background pictures
   lockscreen.py        lock-screen display
   autostart.py         launch at login

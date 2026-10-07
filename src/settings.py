@@ -24,6 +24,10 @@ DEFAULTS = {
     "welcome": True,        # greeting animation after logging in / unlocking
     "auto_update": True,    # download and open new releases without being asked
     "focus_modes": [],      # filled with focus.DEFAULT_MODES on first run; edited in the Focus Modes window
+    "calendar": False,      # show the next calendar event (asks for calendar access when switched on)
+    "shelf": [],            # paths of files parked on the island
+    "categories": [],       # [{"name", "icon", "items": [button ids]}]; filled in by menu.normalize
+    "known_items": [],      # button ids that existed when the categories were last saved
     "custom_buttons": [],   # [{"name", "icon", "kind", "target"}], edited in the Custom Buttons window
 }
 FOCUS_CHOICES = (15, 25, 45, 60)
@@ -32,6 +36,9 @@ FOCUS_CHOICES = (15, 25, 45, 60)
 def load():
     values = dict(DEFAULTS)
     values["custom_buttons"] = []     # never share the default list
+    values["categories"] = []
+    values["shelf"] = []
+    values["known_items"] = []
     values["focus_modes"] = copy.deepcopy(focus.DEFAULT_MODES)
     try:
         with open(PATH, encoding="utf-8") as f:
