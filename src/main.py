@@ -3,13 +3,9 @@ import os
 import signal
 import sys
 
-from AppKit import (
-    NSApplication, NSApplicationActivationPolicyAccessory, NSImage, NSMenu, NSMenuItem, NSStatusBar,
-    NSVariableStatusItemLength,
-)
+from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSMenu
 from PyObjCTools import AppHelper
 
-from custom_buttons import _Action
 from island import Island
 
 
@@ -33,21 +29,6 @@ def main():
 
     island = Island()
     island.start()
-
-    item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
-    icon = NSImage.imageWithSystemSymbolName_accessibilityDescription_("capsule.fill", "Dynamic Island")
-    if icon is not None:
-        icon.setTemplate_(True)
-        item.button().setImage_(icon)
-    else:
-        item.button().setTitle_("DI")
-    menu = NSMenu.alloc().init()
-    quit_target = _Action.alloc().init()          # goes through the island so a locked focus can refuse
-    quit_target.callback = island.request_quit
-    quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit Dynamic Island", "fire:", "q")
-    quit_item.setTarget_(quit_target)
-    menu.addItem_(quit_item)
-    item.setMenu_(menu)
 
     # No visible menu bar for an accessory app, but text fields still need these for Cmd-X/C/V/A.
     main_menu = NSMenu.alloc().init()

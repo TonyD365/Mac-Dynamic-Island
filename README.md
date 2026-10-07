@@ -120,7 +120,7 @@ pre-releases are ignored.
 
 ```
 src/                 the app
-  main.py              entry point, menu bar item
+  main.py              entry point
   island.py            window, layers, animation, interaction
   screen.py            finds the built-in display and the notch
   monitors.py          camera, microphone, audio, brightness, battery, Bluetooth, system stats
