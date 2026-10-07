@@ -13,8 +13,12 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import backgrounds          # noqa: E402
+import calendar_events      # noqa: E402
 import custom_buttons       # noqa: E402
 import focus                # noqa: E402
+import menu                 # noqa: E402
+import ring                 # noqa: E402
+import shelf                # noqa: E402
 import monitors             # noqa: E402
 import screen               # noqa: E402
 import settings             # noqa: E402
@@ -256,6 +260,156 @@ class ScreenTests(unittest.TestCase):
     def test_no_built_in_display(self):
         self.assertIsNone(screen.builtin_screen([self.display(5)], lambda n: False))
         self.assertIsNone(screen.builtin_screen([], lambda n: True))
+
+
+class RingTests(unittest.TestCase):
+    def test_positions_run_round_the_island(self):
+        points = ring.positions(150, 77.5, 28, 7)
+        self.assertEqual(len(points), 7)
+        self.assertEqual(points[0], (-178, ring.SIDE_Y))                    # beside the island, left
+        self.assertAlmostEqual(points[3][0], 0.0)                           # middle one is centred...
+        self.assertAlmostEqual(points[3][1], -105.5)                        # ...and below the island
+        for (x, y), (mx, my) in zip(points, reversed(points)):              # left and right mirror each other
+            self.assertAlmostEqual(x, -mx)
+            self.assertAlmostEqual(y, my)
+
+    def test_buttons_do_not_overlap(self):
+        inner = ring.positions(150, 77.5, 28, 8)
+        outer = ring.positions(150, 77.5, 72, 9)
+        points = inner + outer
+        for i, (ax, ay) in enumerate(points):
+            for bx, by in points[i + 1:]:
+                self.assertGreater(((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5, 2 * ring.RADIUS)
+
+    def make(self, slots, items):
+        """A Ring without layers: only the bookkeeping is under test."""
+        r = ring.Ring.__new__(ring.Ring)
+        r.slots, r.offset, r.items = slots, 0, []
+        r.set_items(items)
+        return r
+
+    def test_a_few_buttons_start_in_the_middle(self):
+        self.assertEqual(self.make(7, ["a", "b", "c"]).shown(), [None, None, "a", "b", "c", None, None])
+
+    def test_a_short_ring_still_turns_and_comes_back(self):
+        r = self.make(5, ["a", "b"])
+        start = r.shown()
+        seen = set()
+        for _ in range(len(r.track())):
+            r.offset = (r.offset + 1) % len(r.track())
+            seen.add(tuple(r.shown()))
+        self.assertEqual(r.shown(), start)                                  # a full turn ends where it began
+        self.assertEqual(len(seen), 5)                                      # and passed through every position
+
+    def test_a_long_ring_shows_a_window_and_wraps(self):
+        r = self.make(3, list("abcde"))
+        self.assertTrue(r.scrolls())
+        self.assertEqual(r.shown(), ["a", "b", "c"])
+        r.offset = 4
+        self.assertEqual(r.shown(), ["e", "a", "b"])
+
+
+class CategoryTests(unittest.TestCase):
+    def fresh(self, **changes):
+        values = {"categories": [], "known_items": [], "custom_buttons": []}
+        values.update(changes)
+        return values
+
+    def test_first_run_deals_every_button_into_its_category(self):
+        values = self.fresh()
+        self.assertTrue(menu.normalize(values))
+        placed = [item for category in values["categories"] for item in category["items"]]
+        self.assertEqual(sorted(placed), sorted(menu.BUILTIN_LOOK))
+        self.assertEqual(len(placed), len(set(placed)))
+        self.assertEqual(menu.unused(values), [])
+        self.assertFalse(menu.normalize(values))                            # and then it is stable
+
+    def test_every_built_in_button_has_a_look(self):
+        for category in menu.DEFAULT_CATEGORIES:
+            for item in category["items"]:
+                self.assertIn(item, menu.BUILTIN_LOOK)
+
+    def test_custom_buttons_get_ids_and_a_home(self):
+        values = self.fresh(custom_buttons=[{"name": "Mail", "kind": "url", "target": "x.com"}])
+        menu.normalize(values)
+        button = values["custom_buttons"][0]
+        self.assertTrue(button["id"])
+        mine = next(c for c in values["categories"] if c["name"] == menu.CUSTOM_CATEGORY)
+        self.assertEqual(mine["items"], [menu.custom_id(button)])
+        self.assertEqual(menu.describe_id(values, menu.custom_id(button)), ("star.fill", "Mail"))
+
+    def test_a_removed_button_stays_out_but_a_new_one_comes_in(self):
+        values = self.fresh()
+        menu.normalize(values)
+        for category in values["categories"]:
+            if "dark" in category["items"]:
+                category["items"].remove("dark")
+        menu.normalize(values)
+        self.assertEqual(menu.unused(values), ["dark"])                     # the user took it out: respected
+        values["known_items"].remove("lock")                                # as if "lock" arrived in an update
+        for category in values["categories"]:
+            if "lock" in category["items"]:
+                category["items"].remove("lock")
+        menu.normalize(values)
+        self.assertNotIn("lock", menu.unused(values))
+
+    def test_deleted_and_repeated_buttons_are_cleaned_up(self):
+        values = self.fresh()
+        menu.normalize(values)
+        values["categories"][0]["items"] += ["custom:gone", "mute", "mute"]
+        menu.normalize(values)
+        placed = [item for category in values["categories"] for item in category["items"]]
+        self.assertNotIn("custom:gone", placed)
+        self.assertEqual(placed.count("mute"), 1)
+
+    def test_a_deleted_home_category_is_recreated_for_new_custom_buttons(self):
+        values = self.fresh()
+        menu.normalize(values)
+        values["categories"] = [c for c in values["categories"] if c["name"] != menu.CUSTOM_CATEGORY]
+        values["custom_buttons"].append({"name": "New", "kind": "url", "target": "x.com"})
+        menu.normalize(values)
+        self.assertIn(menu.CUSTOM_CATEGORY, [c["name"] for c in values["categories"]])
+
+
+class CalendarTests(unittest.TestCase):
+    def event(self, name, start, length=1800):
+        return {"id": name, "title": name, "start": start, "end": start + length}
+
+    def test_pick_next(self):
+        now = 10000.0
+        events = [self.event("ended", now - 7200), self.event("long ago, still on", now - 3600, 7200),
+                  self.event("later", now + 7200), self.event("soon", now + 600)]
+        self.assertEqual(calendar_events.pick_next(events, now)["title"], "soon")
+        events.append(self.event("just started", now - 120))
+        self.assertEqual(calendar_events.pick_next(events, now)["title"], "just started")
+        self.assertIsNone(calendar_events.pick_next([], now))
+
+    def test_describe(self):
+        now = 10000.0
+        clock = lambda t: "10:30"
+        self.assertEqual(calendar_events.describe(self.event("a", now + 600), now, clock), "10:30  ·  in 10 min")
+        self.assertEqual(calendar_events.describe(self.event("a", now - 60), now, clock), "10:30  ·  now")
+        self.assertEqual(calendar_events.describe(self.event("a", now + 7500), now, clock), "10:30  ·  in 2 h 05 min")
+
+    def test_nothing_is_read_without_permission(self):
+        calendar = calendar_events.Calendar()
+        if not calendar.authorized():
+            self.assertIsNone(calendar.next_event())
+
+
+class ShelfTests(unittest.TestCase):
+    def test_add_and_prune(self):
+        with tempfile.TemporaryDirectory() as folder:
+            one, two = os.path.join(folder, "a.txt"), os.path.join(folder, "b.txt")
+            for path in (one, two):
+                open(path, "w").close()
+            values = {"shelf": []}
+            self.assertEqual(shelf.add(values, [one, two, one, os.path.join(folder, "missing")]), 2)
+            self.assertEqual(shelf.add(values, [one]), 0)                   # already there
+            os.remove(two)
+            self.assertTrue(shelf.prune(values))
+            self.assertEqual(values["shelf"], [os.path.realpath(one)] if values["shelf"][0] != one else [one])
+            self.assertFalse(shelf.prune(values))
 
 
 class SmallThingsTests(unittest.TestCase):

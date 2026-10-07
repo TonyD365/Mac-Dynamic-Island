@@ -108,8 +108,13 @@ def measure_interface(src):
     isl.open_menu()
     isl.menu_seen = time.time() + 3600
     results["loop: tick, ring open (ms)"] = median_ms(isl.tick, 400)
-    if hasattr(isl, "rotate_menu"):
-        results["ring: turn one step (ms)"] = median_ms(lambda: isl.rotate_menu(1), 100)
+    turn = (lambda: isl.inner.rotate(1)) if hasattr(isl, "inner") else (lambda: isl.rotate_menu(1))
+    results["ring: turn one step (ms)"] = median_ms(turn, 100)
+    if hasattr(isl, "outer"):                   # a category open: two rings to track
+        category = next((e for e in isl.inner.items if e.children), None)
+        if category is not None:
+            isl.open_outer(category, isl.inner.pos[0])
+            results["loop: tick, both rings open (ms)"] = median_ms(isl.tick, 400)
     return results
 
 

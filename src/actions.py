@@ -56,8 +56,8 @@ class Actions:
     def open_app(self, name):
         subprocess.Popen(["open", "-a", name])
 
-    def open_downloads(self):
-        subprocess.Popen(["open", os.path.expanduser("~/Downloads")])
+    def open_path(self, path):
+        subprocess.Popen(["open", os.path.expanduser(path)])
 
     def pick_color(self, done):
         """Show the system eyedropper; copies the picked colour as #RRGGBB and calls done(hex)."""

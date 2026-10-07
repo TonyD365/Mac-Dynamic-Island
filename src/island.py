@@ -4,7 +4,7 @@ import time
 from types import SimpleNamespace
 
 from AppKit import (
-    NSApp, NSApplicationDidChangeScreenParametersNotification, NSBackingStoreBuffered, NSColor, NSEvent, NSFont,
+    NSSound, NSApp, NSApplicationDidChangeScreenParametersNotification, NSBackingStoreBuffered, NSColor, NSEvent, NSFont,
     NSFontDescriptorSystemDesignRounded, NSFontWeightBold, NSFontWeightMedium, NSFontWeightSemibold, NSImage,
     NSImageSymbolConfiguration, NSMainMenuWindowLevel, NSMakePoint, NSMakeRect, NSNull, NSDistributedNotificationCenter, NSNotificationCenter, NSOpenPanel, NSPanel, NSRunLoop,
     NSRunLoopCommonModes, NSTimer, NSValue, NSView, NSWindowCollectionBehaviorCanJoinAllSpaces,
@@ -21,15 +21,24 @@ from Quartz import (
 import actions
 import autostart
 import backgrounds
+import categories_editor
 import custom_buttons
 import focus
 import focus_editor
 import focus_panel
 import lockscreen
+import menu
 import monitors
+import ring
 import screen as screen_util
+import calendar_events
 import settings
+import shelf
 import updater
+from ui import (
+    BLACK, BLUE, FAINT, GRAY, GREEN, HOVER, ORANGE, PINK, PURPLE, RED, WHITE, YELLOW,
+    font as _font, no_anim as _no_anim, spring as _spring,
+)
 from version import VERSION
 
 # Size limits of the island, in points. Every state is clamped to these.
@@ -39,22 +48,12 @@ MAX_H = 80.0          # expanded height
 ROW_SPACE = 44.0      # height added below the notch when expanded
 SHOULDER = 6.0        # radius of the concave corners where the island meets the screen edge
 GLOW_PAD = 40.0       # transparent margin around the island for the glow
-MENU_R = 18.0         # radius of the round action buttons that fan out around the island
-MENU_SLOTS = 7        # buttons visible at once; more are reached by scrolling the ring
-MENU_GAP = 10.0       # space between the island and the action buttons
+MENU_R = ring.RADIUS  # radius of the round buttons that fan out around the island
+MENU_GAP = 10.0       # space between the island and the inner ring of buttons
+RING_GAP = 8.0        # space between the inner and the outer ring
+INNER_SLOTS = 8       # buttons visible at once in each ring; more are reached by turning it
+OUTER_SLOTS = 9
 
-WHITE = NSColor.whiteColor()
-GRAY = NSColor.colorWithWhite_alpha_(0.60, 1.0)
-FAINT = NSColor.colorWithWhite_alpha_(1.0, 0.14)
-GREEN = NSColor.systemGreenColor()
-ORANGE = NSColor.systemOrangeColor()
-PINK = NSColor.systemPinkColor()
-YELLOW = NSColor.systemYellowColor()
-RED = NSColor.systemRedColor()
-BLUE = NSColor.systemBlueColor()
-PURPLE = NSColor.systemPurpleColor()
-BLACK = NSColor.blackColor()
-HOVER = NSColor.colorWithWhite_alpha_(0.24, 1.0)
 
 
 class IslandPanel(NSPanel):
@@ -84,31 +83,18 @@ class IslandView(NSView):
     def scrollWheel_(self, event):
         self.on_scroll(event.scrollingDeltaY(), event.hasPreciseScrollingDeltas())
 
+    # Files dragged onto the island go to the Shelf.
+    def draggingEntered_(self, sender):
+        return self.on_file_drag(True)
 
-def _no_anim(fn):
-    CATransaction.begin()
-    CATransaction.setDisableActions_(True)
-    fn()
-    CATransaction.commit()
+    def draggingUpdated_(self, sender):
+        return self.on_file_drag(True)
 
+    def draggingExited_(self, sender):
+        self.on_file_drag(False)
 
-def _font(size, weight=NSFontWeightMedium, rounded=False):
-    font = NSFont.monospacedDigitSystemFontOfSize_weight_(size, weight)
-    if rounded:
-        desc = font.fontDescriptor().fontDescriptorWithDesign_(NSFontDescriptorSystemDesignRounded)
-        font = (desc and NSFont.fontWithDescriptor_size_(desc, size)) or font
-    return font
-
-
-def _spring(key_path, old, new, damping):
-    a = CASpringAnimation.animationWithKeyPath_(key_path)
-    a.setFromValue_(old)
-    a.setToValue_(new)
-    a.setMass_(1.0)
-    a.setStiffness_(260.0)
-    a.setDamping_(damping)
-    a.setDuration_(a.settlingDuration())
-    return a
+    def performDragOperation_(self, sender):
+        return self.on_file_drop(sender.draggingPasteboard())
 
 
 def _greeting():
@@ -129,14 +115,22 @@ class Island:
         self.settings = settings.load()
         self.editor = custom_buttons.Editor()
         self.editor.values = self.settings
-        self.editor.on_change = self.update_menu
+        self.editor.on_change = self.buttons_changed
+        if menu.normalize(self.settings):
+            settings.save(self.settings)
+        self.categories_editor = categories_editor.Editor()
+        self.categories_editor.values = self.settings
+        self.categories_editor.on_change = self.update_menu
         self.guard = focus.Guard()
         self.focus_mode = None        # the mode of the running focus session
         self.focus_editor = focus_editor.Editor()
         self.focus_editor.values = self.settings
         self.focus_dropdown = None    # built once the island's window exists
-        self.hidden_slots = ()        # ring buttons tucked away while the focus drop-down covers them
         self.last_block_toast = 0.0
+        self.timer_end = None         # when the countdown timer finishes
+        self.stopwatch_start = None   # when the stopwatch was started
+        self.drag_over = False        # files are being dragged over the island
+        self.event_alerts = set()     # (event id, kind) already announced
         self.seeking = None           # fraction 0..1 while the progress bar is being dragged
         self.media_layout = None      # whether the middle column is laid out for media right now
         self.updater = updater.Updater(lambda: self.settings["auto_update"])
@@ -145,14 +139,17 @@ class Island:
         self.menu_open = False
         self.menu_page = "main"
         self.menu_seen = 0.0
-        self.hover_btn = None
+        self.hover = None         # (ring, slot) under the pointer
+        self.open_entry = None    # key of the inner-ring button whose outer ring is showing
+        self.last_click = (0.0, 0.0)   # where the last ring button pressed sits, for drop-downs
+        self.inner = self.outer = None
         self.levels = None        # last seen (volume, muted, brightness)
         self.hud = None           # ("volume" | "brightness", visible-until time)
         self.prev_bt = None
-        self.menu_offset = 0      # how far the button ring has been rotated
         self.scroll_acc = 0.0
         self.last_rotate = 0.0
         self.on_island = False    # pointer is over the island itself
+        self.pointer = (0.0, 0.0) # where the pointer is, in island coordinates
         self.locked = False       # screen is locked: only the harmless buttons are offered
         self.mode = None
         self.size = (0.0, 0.0)
@@ -191,6 +188,9 @@ class Island:
         self.view.on_scroll = self.on_scroll
         self.view.on_drag = self.on_drag
         self.view.on_release = self.on_release
+        self.view.on_file_drag = self.on_file_drag
+        self.view.on_file_drop = self.on_file_drop
+        self.view.registerForDraggedTypes_(["public.file-url"])
         self.root = CALayer.layer()
         self.view.setLayer_(self.root)
         self.view.setWantsLayer_(True)
@@ -207,6 +207,7 @@ class Island:
         self._lock_observers = [
             center.addObserverForName_object_queue_usingBlock_(name, None, None, lambda note, v=value: self.set_locked(v))
             for name, value in (("com.apple.screenIsLocked", True), ("com.apple.screenIsUnlocked", False))]
+        self.monitors.calendar_on = self.settings["calendar"]
         self.welcome_soon(1.2)          # also greets when the island starts at login
         self.updater.start()
         self._timer = NSTimer.timerWithTimeInterval_repeats_block_(0.05, True, lambda t: self.tick())
@@ -267,17 +268,18 @@ class Island:
         self.exp_w = min(max(MAX_W, self.compact_w + 16), screen_w * 0.3)
         self.exp_h = min(self.nh + ROW_SPACE, MAX_H)
         # Whole-point window size; a fractional one leaves a hairline gap between island and screen edge.
-        # Action buttons hug the expanded island: one beside each end, one under each corner, three below.
-        hx, hy, d = self.exp_w / 2, self.exp_h, MENU_GAP + MENU_R
-        self.menu_pos = [(-hx - d, -24.0), (-hx - 12, -hy - 12), (-hx * 0.56, -hy - d), (0.0, -hy - d),
-                         (hx * 0.56, -hy - d), (hx + 12, -hy - 12), (hx + d, -24.0)]
+        # Two rings of buttons hug the expanded island: categories close in, their buttons further out.
+        hx, hy = self.exp_w / 2, self.exp_h
+        inner_offset = MENU_GAP + MENU_R
+        outer_offset = inner_offset + 2 * MENU_R + RING_GAP
+        self.inner_pos = ring.positions(hx, hy, inner_offset, INNER_SLOTS)
+        self.outer_pos = ring.positions(hx, hy, outer_offset, OUTER_SLOTS)
+        # How far each ring reaches, for deciding what the pointer is over.
+        self.inner_reach = (hx + inner_offset + MENU_R + 6, hy + inner_offset + MENU_R + 6)
+        self.outer_reach = (hx + outer_offset + MENU_R + 6, hy + outer_offset + MENU_R + 6)
         # Leave room for the buttons' spring overshoot, or the window edge clips them mid-bounce.
-        self.menu_half_w = (hx + d) * 1.1 + MENU_R + 10
-        self.ring_half_w = hx + d + MENU_R + 6      # the area the open ring occupies
-        self.ring_depth = hy + d + MENU_R + 6
-        self.menu_depth = (hy + d) * 1.1 + MENU_R + 10
-        self.win_w = 2 * math.ceil(max(hx + GLOW_PAD, self.menu_half_w))
-        self.win_h = math.ceil(max(hy + GLOW_PAD, self.menu_depth))
+        self.win_w = 2 * math.ceil(max(hx + GLOW_PAD, (hx + outer_offset) * 1.06 + MENU_R + 10))
+        self.win_h = math.ceil(max(hy + GLOW_PAD, (hy + outer_offset) * 1.06 + MENU_R + 10))
         self.panel.setFrame_display_(
             NSMakeRect(self.cx - self.win_w / 2, self.top - self.win_h, self.win_w, self.win_h), True)
         self.build_layers()
@@ -314,21 +316,12 @@ class Island:
         menu_root = CALayer.layer()
         menu_root.setPosition_((self.win_w / 2, self.win_h))
         self.root.addSublayer_(menu_root)
-        self.menu_home = (0.0, -self.nh / 2)
-        self.menu_layers = []
+        home = (0.0, -self.nh / 2)
+        self.outer = ring.Ring(self, menu_root, self.outer_pos, home)     # drawn first: it sits underneath
+        self.inner = ring.Ring(self, menu_root, self.inner_pos, home)
         self.menu_open = False
-        self.hover_btn = None
-        for _ in self.menu_pos:
-            b = CALayer.layer()
-            b.setBounds_(NSMakeRect(0, 0, 2 * MENU_R, 2 * MENU_R))
-            b.setCornerRadius_(MENU_R)
-            b.setBackgroundColor_(black)
-            b.setBorderWidth_(1.0)
-            b.setBorderColor_(FAINT.CGColor())
-            b.setPosition_(self.menu_home)
-            b.setOpacity_(0)
-            menu_root.addSublayer_(b)
-            self.menu_layers.append((b, self.symbol_layer(b, MENU_R, MENU_R)))
+        self.hover = None
+        self.open_entry = None
 
         self.glow = body(False)
         self.glow.setShadowOffset_((0, 0))
@@ -495,15 +488,15 @@ class Island:
         CGPathAddArc(circle, None, 0, 0, ring_r, math.pi / 2, math.pi / 2 - 2 * math.pi, True)
         self.ring = None
         for color in (FAINT, WHITE):
-            ring = CAShapeLayer.layer()
-            ring.setPath_(circle)
-            ring.setFillColor_(None)
-            ring.setStrokeColor_(color.CGColor())
-            ring.setLineWidth_(2.5)
-            ring.setLineCap_("round")
-            ring.setPosition_((ring_x, ring_y))
-            self.detail.addSublayer_(ring)
-            self.ring = ring
+            arc = CAShapeLayer.layer()
+            arc.setPath_(circle)
+            arc.setFillColor_(None)
+            arc.setStrokeColor_(color.CGColor())
+            arc.setLineWidth_(2.5)
+            arc.setLineCap_("round")
+            arc.setPosition_((ring_x, ring_y))
+            self.detail.addSublayer_(arc)
+            self.ring = arc
         self.ring.setStrokeEnd_(0)
         self.ring_text = self.text_layer(self.detail, ring_x - ring_r, ring_y, 2 * ring_r, 9.5, WHITE, "center",
                                          NSFontWeightBold, rounded=True)
@@ -638,13 +631,10 @@ class Island:
             self.refresh(time.time())
             return
         if self.menu_open:
-            for i, (bx, by) in enumerate(self.menu_pos):
-                if (x - bx) ** 2 + (y - by) ** 2 <= (MENU_R + 2) ** 2:
-                    item = self.menu_items()[i]
-                    if item is not None:
-                        item.action()
-                        self.update_menu()
-                        self.refresh(time.time())
+            for which in (self.outer, self.inner):
+                slot = which.slot_at(x, y)
+                if slot is not None:
+                    self.press(which, slot)
                     return
         for bx, by, half, callback, enabled in self.buttons:
             if abs(x - bx) <= half and abs(y - by) <= half and enabled():
@@ -657,140 +647,97 @@ class Island:
 
     # ---- action menu -----------------------------------------------------
 
-    def menu_items(self):
-        """What each of the visible slots shows right now, left to right (None = empty slot)."""
-        items = self.all_items()
-        if len(items) <= MENU_SLOTS:
-            return items + [None] * (MENU_SLOTS - len(items))
-        return [items[(self.menu_offset + i) % len(items)] for i in range(MENU_SLOTS)]
+    def inner_entries(self):
+        """What the inner ring holds right now: categories, or the settings groups."""
+        return menu.settings_entries(self) if self.menu_page == "settings" else menu.main_entries(self)
 
-    def rotate_menu(self, step):
-        """Turn the ring one button: every button glides to its neighbour's slot.
-
-        Each button starts from wherever its neighbour is *on screen right now*, so a new step
-        taken while the previous one is still moving carries on smoothly instead of snapping back.
-        """
-        count = len(self.all_items())
-        if count <= MENU_SLOTS:
-            return
-        shown = [(b.presentationLayer() or b).position() for b, _ in self.menu_layers]
-        self.menu_offset = (self.menu_offset + step) % count
+    def press(self, which, slot):
+        """A ring button was clicked: open its outer ring, or do what it does."""
+        item = which.shown()[slot]
+        self.last_click = which.pos[slot]
+        if item.children is not None:
+            if self.open_entry == item.key:
+                self.close_outer()
+            else:
+                self.open_outer(item, which.pos[slot])
+        else:
+            item.action()
         self.update_menu()
-        ease = CAMediaTimingFunction.functionWithName_("easeOut")
-        for i, (b, _) in enumerate(self.menu_layers):
-            source = i + step
-            entering = not 0 <= source < MENU_SLOTS
-            if entering:        # slides in from just past the end of the ring, fading up
-                (x, y), (nx, ny) = self.menu_pos[i], self.menu_pos[i - step]
-                start = NSMakePoint(x + (x - nx) * 0.6, y + (y - ny) * 0.6)
-            else:
-                start = shown[source]
-            move = CABasicAnimation.animationWithKeyPath_("position")
-            move.setFromValue_(NSValue.valueWithPoint_(start))
-            move.setToValue_(NSValue.valueWithPoint_(NSMakePoint(*self.menu_pos[i])))
-            move.setDuration_(0.2)
-            move.setTimingFunction_(ease)
-            b.addAnimation_forKey_(move, "move")
-            if entering:
-                fade = CABasicAnimation.animationWithKeyPath_("opacity")
-                fade.setFromValue_(0.0)
-                fade.setToValue_(1.0)
-                fade.setDuration_(0.2)
-                b.addAnimation_forKey_(fade, "fade")
-            else:
-                b.removeAnimationForKey_("fade")
         self.refresh(time.time())
 
-    def all_items(self):
-        """Every button of the current page, in ring order. On the lock screen only harmless ones remain:
-        nothing that opens apps or files, runs commands or changes settings."""
-        items = self.page_items()
-        return [i for i in items if i.safe] if self.locked else items
+    def open_outer(self, item, origin):
+        self.open_entry = item.key
+        self.inner.selected = item.key
+        self.outer.set_items(item.children)
+        self.outer.show(origin)             # the buttons fan out from the category that was clicked
 
-    def page_items(self):
-        S, A, raw = self.settings, self.actions, self.monitors
-        item = lambda symbol, label, status, action, on=None, safe=False: SimpleNamespace(
-            symbol=symbol, label=label, status=status, action=action, on=on, safe=safe)
+    def close_outer(self):
+        self.open_entry = None
+        self.inner.selected = None
+        self.outer.hide()
 
-        def toggle(symbol, label, key):
-            def flip():
-                S[key] = not S[key]
-                settings.save(S)
-            return item(symbol, label, lambda: "On" if S[key] else "Off", flip, lambda: S[key])
+    def update_menu(self):
+        """Re-read what the rings hold (lists and on/off states change) and redraw them."""
+        if not self.menu_open or self.inner is None:
+            return
+        entries = self.inner_entries()
+        self.inner.set_items(entries, keep_offset=True)
+        opened = next((e for e in entries if e.key == self.open_entry), None)
+        if self.open_entry is not None and (opened is None or not opened.children):
+            self.close_outer()              # the open category disappeared (emptied, or the screen locked)
+        elif opened is not None:
+            self.outer.set_items(opened.children, keep_offset=True)
+            self.outer.update()
+        self.inner.selected = self.open_entry
+        self.inner.update()
 
-        if self.menu_page == "settings":
-            def cycle_background():
-                S["background"] = backgrounds.next_choice(S)
-                settings.save(S)
-                self.apply_background()
+    def buttons_changed(self):
+        """Custom buttons or categories were edited: tidy the categories and redraw."""
+        menu.normalize(self.settings)
+        settings.save(self.settings)
+        self.update_menu()
 
-            def cycle_dim():
-                S["background_dim"] = backgrounds.next_dim(S["background_dim"])
-                settings.save(S)
-                self.apply_background()
+    def hovered_item(self):
+        if self.hover is None:
+            return None
+        which, slot = self.hover
+        shown = which.shown()
+        return shown[slot] if slot < len(shown) else None
 
-            lock = toggle("lock.display", "Show on Lock Screen", "lockscreen")
-            lock.status = lambda: ("On" if S["lockscreen"] else "Off") + "  ·  applies after restart"
-            return [
-                item("chevron.left", "Back", lambda: "Return to actions", lambda: self.set_page("main")),
-                item("plus", "Custom Buttons",
-                     lambda: "%d added  ·  click to edit" % len(S["custom_buttons"]), self.edit_custom_buttons),
-                toggle("video.fill", "Camera & Mic Alerts", "privacy"),
-                toggle("music.note", "Now Playing", "music"),
-                toggle("bolt.fill", "Power Alerts", "power"),
-                toggle("headphones", "Bluetooth Alerts", "bluetooth"),
-                toggle("slider.horizontal.3", "Volume & Brightness Bar", "hud"),
-                toggle("speaker.wave.2.fill", "Scroll to Change Volume", "scroll_volume"),
-                toggle("cpu", "System Stats", "stats"),
-                toggle("clock.fill", "24-Hour Clock", "clock24"),
-                item("hourglass", "Focus Modes",
-                     lambda: "%d modes  ·  click to edit" % len(S["focus_modes"]), self.edit_focus_modes),
-                toggle("sparkles", "Glow Effects", "glow"),
-                toggle("hand.wave.fill", "Welcome Animation", "welcome"),
-                item("photo.fill", "Background", lambda: "%s  ·  click for next" % backgrounds.label(S),
-                     cycle_background, lambda: bool(S["background"])),
-                item("folder.fill", "Choose Image…", lambda: "Use your own picture", self.choose_image),
-                item("circle.righthalf.filled", "Dimming",
-                     lambda: "%s  ·  click to change" % backgrounds.dim_label(S["background_dim"]), cycle_dim),
-                lock,
-                item("power", "Launch at Login",
-                     lambda: "On" if autostart.is_enabled() else "Off",
-                     lambda: autostart.set_enabled(not autostart.is_enabled()), autostart.is_enabled),
-                toggle("arrow.down.app.fill", "Automatic Updates", "auto_update"),
-                item("arrow.triangle.2.circlepath", "Check for Updates", self.update_status, self.check_for_updates),
-                item("xmark", "Quit Dynamic Island", lambda: "Close the island completely", self.request_quit),
-            ]
+    def set_page(self, page):
+        self.menu_page = page
+        self.close_outer()
+        self.inner.set_items(self.inner_entries())
+        self.inner.pop()
 
-        def toggle_mute():
-            raw.muted = not raw.muted          # shown at once; the next poll confirms it
-            monitors.set_mute(raw.muted)
+    def open_menu(self):
+        self.menu_open = True
+        self.menu_page = "main"
+        self.scroll_acc = 0.0
+        self.menu_seen = time.time()
+        self.open_entry = None
+        self.inner.selected = None
+        self.inner.set_items(self.inner_entries())
+        self.inner.show()
 
-        return [
-            item("timer", "Focus",
-                 lambda: ("%s  ·  running" % (self.focus_mode or {}).get("name", "Focus")) if self.pomo_end
-                 else "Choose a focus mode",
-                 self.show_focus_dropdown, lambda: bool(self.pomo_end)),
-            item("speaker.slash.fill", "Mute", lambda: "Muted" if raw.muted else "Sound on",
-                 toggle_mute, lambda: bool(raw.muted), safe=True),
-            item("circle.lefthalf.filled", "Dark Mode", lambda: "On" if A.is_dark() else "Off",
-                 A.toggle_dark, A.is_dark),
-            item("cup.and.saucer.fill", "Keep Awake", lambda: "On" if A.is_awake() else "Off",
-                 A.toggle_awake, A.is_awake, safe=True),
-            item("lock.fill", "Lock Screen", lambda: "Lock this Mac now", self.lock_screen),
-            item("moon.zzz.fill", "Sleep Display", lambda: "Turn the screen off now", self.sleep_display, safe=True),
-            item("gearshape.fill", "Settings", lambda: "Customize the island", lambda: self.set_page("settings")),
-            # Past the seventh slot: scroll the ring to reach these.
-            item("camera.viewfinder", "Screenshot", lambda: "Drag an area  ·  copied to clipboard", self.screenshot),
-            item("eyedropper", "Color Picker", lambda: "Pick a colour  ·  copies its hex code", self.pick_color),
-            item("arrow.down.to.line", "Downloads", lambda: "Open the Downloads folder", self.open_downloads),
-            item("gauge.medium", "Activity Monitor", lambda: "See what is using the Mac",
-                 lambda: self.launch("Activity Monitor")),
-            item("plus.forwardslash.minus", "Calculator", lambda: "Open Calculator", lambda: self.launch("Calculator")),
-        ] + [
-            item(b.get("icon", "star.fill"), b.get("name", "Custom"), lambda b=b: custom_buttons.describe(b),
-                 lambda b=b: self.run_custom(b))
-            for b in S["custom_buttons"]
-        ]
+    def close_menu(self):
+        self.menu_open = False
+        if self.focus_dropdown is not None and self.focus_dropdown.visible:
+            self.focus_dropdown.close()
+        self.hover = None
+        self.open_entry = None
+        self.outer.hide()
+        self.inner.hide()
+
+    def ring_under(self, x, y):
+        """Which ring the pointer is over, for scrolling: the nearer one of those that are out."""
+        if self.outer.visible and self.outer.distance(x, y) < self.inner.distance(x, y):
+            return self.outer
+        return self.inner
+
+    def edit_categories(self):
+        self.close_menu()
+        self.categories_editor.show()
 
     def run_custom(self, button):
         self.close_menu()
@@ -808,9 +755,84 @@ class Island:
         self.close_menu()
         self.actions.pick_color(lambda text: self.toast(text, "Copied to clipboard", WHITE))
 
-    def open_downloads(self):
+    def open_folder(self, path):
         self.close_menu()
-        self.actions.open_downloads()
+        self.actions.open_path(path)
+
+    # ---- timer and stopwatch ----
+
+    @staticmethod
+    def clock_text(seconds):
+        seconds = max(0, int(seconds))
+        if seconds >= 3600:
+            return "%d:%02d:%02d" % (seconds // 3600, seconds % 3600 // 60, seconds % 60)
+        return "%d:%02d" % (seconds // 60, seconds % 60)
+
+    def countdown(self, end):
+        return self.clock_text(end - time.time() + 0.99) if end else ""      # 0:01 until it really is over
+
+    def elapsed(self, start):
+        return self.clock_text(time.time() - start) if start else ""
+
+    def start_timer(self, minutes):
+        self.timer_end = time.time() + minutes * 60
+        self.toast("Timer", "%d minute%s" % (minutes, "" if minutes == 1 else "s"), ORANGE, 2.5)
+        self.update_menu()
+
+    def cancel_timer(self):
+        self.timer_end = None
+        self.pulse(GRAY)
+        self.update_menu()
+
+    def toggle_stopwatch(self):
+        if self.stopwatch_start:
+            self.toast("Stopwatch", self.elapsed(self.stopwatch_start), BLUE, 5.0)
+            self.stopwatch_start = None
+        else:
+            self.stopwatch_start = time.time()
+            self.pulse(BLUE)
+
+    # ---- the shelf ----
+
+    def on_file_drag(self, over):
+        """Files are being dragged across the island (or just left). Returns the drag operation offered."""
+        if self.locked:
+            return 0
+        if over != self.drag_over:
+            self.drag_over = over
+            self.refresh(time.time())
+        return 4 if over else 0             # NSDragOperationGeneric: nothing is copied or moved
+
+    def on_file_drop(self, pasteboard):
+        self.drag_over = False
+        added = shelf.add(self.settings, shelf.paths_from(pasteboard))
+        if added:
+            settings.save(self.settings)
+            self.update_menu()
+        count = len(self.settings["shelf"])
+        self.toast("Added to the Shelf" if added else "Already on the Shelf",
+                   "%d item%s kept  ·  Files › Shelf" % (count, "" if count == 1 else "s"), BLUE)
+        return bool(added)
+
+    # ---- calendar ----
+
+    def calendar_status(self):
+        calendar = self.monitors.calendar
+        if not calendar.available():
+            return "Not available in this build"
+        if not self.settings["calendar"]:
+            return "Off"
+        if calendar.authorized():
+            return "On"
+        return "No access  ·  allow it in System Settings" if calendar.denied() else "Waiting for permission"
+
+    def toggle_calendar(self):
+        calendar = self.monitors.calendar
+        self.settings["calendar"] = not self.settings["calendar"] and calendar.available()
+        settings.save(self.settings)
+        self.monitors.calendar_on = self.settings["calendar"]
+        if self.settings["calendar"] and not calendar.authorized():
+            calendar.request_access()
 
     def launch(self, app_name):
         self.close_menu()
@@ -856,7 +878,8 @@ class Island:
             # firing dozens of overlapping steps.
             if abs(self.scroll_acc) >= notch and now - self.last_rotate >= 0.08:
                 self.last_rotate = now
-                self.rotate_menu(1 if self.scroll_acc < 0 else -1)
+                if self.ring_under(*self.pointer).rotate(1 if self.scroll_acc < 0 else -1):
+                    self.refresh(now)
                 self.scroll_acc = 0.0
             return
         raw = self.monitors
@@ -887,72 +910,6 @@ class Island:
     def sleep_display(self):
         self.close_menu()
         self.actions.sleep_display()
-
-    def set_page(self, page):
-        self.menu_page = page
-        self.menu_offset = 0
-        for b, _ in self.menu_layers:      # little pop so the swap reads as a new set of buttons
-            a = CAKeyframeAnimation.animationWithKeyPath_("transform.scale")
-            a.setValues_([1.0, 0.72, 1.06, 1.0])
-            a.setDuration_(0.32)
-            b.addAnimation_forKey_(a, "pop")
-
-    def update_menu(self):
-        for i, item in enumerate(self.menu_items()):
-            b, icon = self.menu_layers[i]
-            b.setHidden_(item is None)
-            if item is None:
-                continue
-            active = bool(item.on and item.on())
-            hovered = i == self.hover_btn
-            fill = (WHITE if active else (HOVER if hovered else BLACK))
-            b.setBackgroundColor_(fill.CGColor())
-            b.setBorderColor_((WHITE if hovered else FAINT).CGColor())
-            self.set_symbol(icon, item.symbol, BLACK if active else WHITE, 14.0)
-
-    def open_menu(self):
-        self.menu_open = True
-        self.menu_page = "main"
-        self.menu_offset = 0
-        self.scroll_acc = 0.0
-        self.menu_seen = time.time()
-        self.update_menu()
-        self.move_menu(True)
-
-    def close_menu(self):
-        self.menu_open = False
-        if self.focus_dropdown is not None and self.focus_dropdown.visible:
-            self.focus_dropdown.close()
-        self.hover_btn = None
-        self.move_menu(False)
-
-    def move_menu(self, opening):
-        start = CACurrentMediaTime()
-        for i, (b, _) in enumerate(self.menu_layers):
-            target = self.menu_pos[i] if opening else self.menu_home
-            pres = b.presentationLayer() or b
-            old_pos, old_opacity = pres.position(), pres.opacity()
-            new_opacity = 1.0 if opening else 0.0
-
-            def apply(b=b, target=target):
-                b.setPosition_(target)
-                b.setOpacity_(new_opacity)
-            _no_anim(apply)
-            begin = start + (i * 0.028 if opening else 0.0)   # staggered fan-out, left to right
-            move = _spring("position", NSValue.valueWithPoint_(old_pos),
-                           NSValue.valueWithPoint_(NSMakePoint(*target)), 22.0 if opening else 34.0)
-            fade = CABasicAnimation.animationWithKeyPath_("opacity")
-            fade.setFromValue_(old_opacity)
-            fade.setToValue_(new_opacity)
-            fade.setDuration_(0.16)
-            scale = CABasicAnimation.animationWithKeyPath_("transform.scale")
-            scale.setFromValue_(0.4 if opening else 1.0)
-            scale.setToValue_(1.0 if opening else 0.4)
-            scale.setDuration_(0.22)
-            for key, a in (("move", move), ("fade", fade), ("scale", scale)):
-                a.setBeginTime_(begin)
-                a.setFillMode_("backwards")
-                b.addAnimation_forKey_(a, key)
 
     def clock(self):
         return time.strftime("%H:%M" if self.settings["clock24"] else "%-I:%M")
@@ -1045,23 +1002,37 @@ class Island:
 
     def show_focus_dropdown(self):
         """Open the drop-down just under the Focus button (and clear of the island itself)."""
+        self.dropdown_panel()
+        self.place_dropdown(self.focus_dropdown.show_modes)
+
+    def show_timer_dropdown(self):
+        self.dropdown_panel()
+        self.place_dropdown(self.focus_dropdown.show_timer)
+
+    def show_shelf_dropdown(self):
+        self.dropdown_panel()
+        self.place_dropdown(self.focus_dropdown.show_shelf)
+
+    def dropdown_panel(self):
         if self.focus_dropdown is None:
             self.focus_dropdown = focus_panel.FocusPanel(self)
-        slot = next((i for i, it in enumerate(self.menu_items()) if it is not None and it.symbol == "timer"), 0)
-        bx, by = self.menu_pos[slot]
+        return self.focus_dropdown
+
+    def place_dropdown(self, view):
+        """Hang the drop-down under the ring button that was just pressed, clear of the island."""
+        panel = self.dropdown_panel()
+        bx, by = self.last_click
         top = min(by - MENU_R - 8, -self.exp_h - 10)
         half = focus_panel.WIDTH / 2
-        # Ring buttons the drop-down would sit under are hidden while it is open.
-        self.hidden_slots = tuple(i for i, (x, y) in enumerate(self.menu_pos)
-                                  if i != slot and abs(x - bx) < half + MENU_R and y - MENU_R < top)
-        for i in self.hidden_slots:
-            self.menu_layers[i][0].setOpacity_(0)
-        self.focus_dropdown.show(self.cx + bx, self.top + top)
+        # Ring buttons the panel would sit on are tucked away while it is open.
+        area = (bx - half, top - 400.0, bx + half, top)
+        for which in (self.inner, self.outer):
+            which.hide_under(area, except_slot=None)
+        panel.show(self.cx + bx, self.top + top, view)
 
     def focus_panel_closed(self):
-        for i in self.hidden_slots:
-            self.menu_layers[i][0].setOpacity_(1 if self.menu_open else 0)
-        self.hidden_slots = ()
+        for which in (self.inner, self.outer):
+            which.unhide()
         self.menu_seen = time.time()
 
     def edit_focus_modes(self):
@@ -1113,25 +1084,33 @@ class Island:
         x, y = m.x - self.cx, m.y - self.top
         w, h = self.size
         on_island = self.on_island = abs(x) <= w / 2 + 3 and -h - 4 <= y <= 2
+        self.pointer = (x, y)
         hovered = None
         if self.menu_open:
-            items = self.menu_items()
-            for i, (bx, by) in enumerate(self.menu_pos):
-                if items[i] is not None and (x - bx) ** 2 + (y - by) ** 2 <= (MENU_R + 2) ** 2:
-                    hovered = i
-            if on_island or (abs(x) <= self.menu_half_w and -self.menu_depth <= y <= 2):
+            for which in (self.outer, self.inner):
+                slot = which.slot_at(x, y)
+                if slot is not None:
+                    hovered = (which, slot)
+                    break
+            reach_x, reach_y = self.outer_reach if self.outer.visible else self.inner_reach
+            in_ring = abs(x) <= reach_x and -reach_y <= y <= 2
+            if on_island or in_ring:
                 self.menu_seen = now
-            elif self.focus_dropdown is not None and self.focus_dropdown.visible:
+            elif self.focus_dropdown is not None and (self.focus_dropdown.visible or self.focus_dropdown.dragging):
                 self.menu_seen = now               # the drop-down belongs to the ring
             elif now - self.menu_seen > 0.6:      # pointer wandered off: fold the buttons away
                 self.close_menu()
-        if hovered != self.hover_btn:
-            self.hover_btn = hovered
-            self.update_menu()
+        else:
+            in_ring = False
+        if hovered != self.hover:
+            for which in (self.inner, self.outer):
+                which.hover = hovered[1] if (hovered and hovered[0] is which) else None
+                if which.visible:
+                    which.update()
+            self.hover = hovered
             self.refresh(now)
-        # While the ring is open its whole area takes the mouse, so scrolling anywhere in it turns the ring.
-        in_ring = self.menu_open and abs(x) <= self.ring_half_w and -self.ring_depth <= y <= 2
-        inside = on_island or hovered is not None or in_ring or self.seeking is not None
+        # While the rings are open their whole area takes the mouse, so scrolling anywhere in it turns them.
+        inside = on_island or hovered is not None or in_ring or self.seeking is not None or self.drag_over
         if self.focus_dropdown is not None and self.focus_dropdown.visible:
             f = self.focus_dropdown.frame()         # the drop-down sits under this window: let clicks reach it
             if f.origin.x <= m.x <= f.origin.x + f.size.width and f.origin.y <= m.y <= f.origin.y + f.size.height:
@@ -1210,6 +1189,27 @@ class Island:
                 self.toast(name + " complete", "Time for a break", RED, 5.0)
         pomo_str = "%d:%02d" % divmod(int(pomo_left), 60) if pomo_left else None
 
+        if self.timer_end and now >= self.timer_end:
+            self.timer_end = None
+            self.toast("Time's up", "The timer has finished", ORANGE, 6.0)
+            sound = NSSound.soundNamed_("Glass")
+            if sound is not None:
+                sound.play()
+            self.update_menu()
+        timer_str = self.countdown(self.timer_end) if self.timer_end else None
+        watch_str = self.elapsed(self.stopwatch_start) if self.stopwatch_start else None
+        ear_str = pomo_str or timer_str or watch_str      # what the right ear counts
+
+        # Next calendar event: announce it ten minutes ahead and when it starts.
+        event = raw.event if S["calendar"] else None
+        if event is not None:
+            minutes = (event["start"] - now) / 60.0
+            for kind, due, text in (("soon", 0 < minutes <= 10, "Starts in %d min" % max(1, round(minutes))),
+                                    ("now", -1 < minutes <= 0, "Starting now")):
+                if due and (event["id"], kind) not in self.event_alerts:
+                    self.event_alerts.add((event["id"], kind))
+                    self.toast(event["title"], text, BLUE, 6.0)
+
         if now >= self.peek_until:
             self.toast_text = None
 
@@ -1224,10 +1224,10 @@ class Island:
         self.mic_dot.setOpacity_(1 if mon.mic else 0)
 
         # Right ear: countdown > music bars > battery glyph.
-        self.set_text(self.ear_text, pomo_str or "")
-        show_bars = playing and not pomo_str
+        self.set_text(self.ear_text, ear_str or "")
+        show_bars = playing and not ear_str
         self.bars.setOpacity_(1 if show_bars else 0)
-        self.batt_glyph.setOpacity_(0 if (pomo_str or show_bars or mon.batt is None) else 1)
+        self.batt_glyph.setOpacity_(0 if (ear_str or show_bars or mon.batt is None) else 1)
         level = (mon.batt or 0) / 100.0
         batt_color = GREEN if mon.ac else (RED if level <= 0.2 else WHITE)
         self.batt_fill.setBounds_(NSMakeRect(0, 0, max(2.0, 19 * level), 7))
@@ -1238,11 +1238,14 @@ class Island:
         self.set_text(self.date_text, time.strftime("%a, %b %-d").upper())
 
         # Expanded: middle column.
-        hud_on = bool(self.hud and now < self.hud[1]) and not (self.menu_open and self.hover_btn is not None)
+        pointed = self.hovered_item() if self.menu_open else None
+        hud_on = bool(self.hud and now < self.hud[1]) and pointed is None and not self.drag_over
         hud_level = 0.0
-        if self.menu_open and self.hover_btn is not None:      # the island doubles as the buttons' tooltip
-            item = self.menu_items()[self.hover_btn]
-            title, sub = item.label, item.status()
+        if self.drag_over:
+            count = len(S["shelf"])
+            title, sub = "Drop to keep on the Shelf", "%d item%s there now" % (count, "" if count == 1 else "s")
+        elif pointed is not None:               # the island doubles as the buttons' tooltip
+            title, sub = pointed.label, pointed.status()
         elif hud_on:
             if self.hud[0] == "brightness":
                 hud_level = raw.brightness or 0.0
@@ -1252,9 +1255,11 @@ class Island:
                 title = "Muted" if raw.muted else "Volume  %d%%" % round(hud_level * 100)
             sub = ""
         elif self.menu_open:
-            count = len(self.all_items())
-            title = "Settings" if self.menu_page == "settings" else "Actions"
-            sub = "Scroll for more  ·  %d buttons" % count if count > MENU_SLOTS else "Point at a button"
+            opened = next((e for e in self.inner.items if e.key == self.open_entry), None)
+            title = opened.label if opened else ("Settings" if self.menu_page == "settings" else "Dynamic Island")
+            scrolling = self.outer if opened else self.inner
+            sub = "Scroll for more  ·  %d buttons" % len(scrolling.items) if scrolling.scrolls() \
+                else ("Point at a button" if opened else "Choose a category")
         elif self.toast_text:
             title, sub = self.toast_text
         elif live:
@@ -1268,6 +1273,14 @@ class Island:
                 sub = "%s / %s" % (clock(self.seeking * music["duration"]), clock(music["duration"]))
         elif pomo_str:
             title, sub = (self.focus_mode or {}).get("name", "Focus"), "%s remaining" % pomo_str
+        elif timer_str:
+            title, sub = "Timer", "%s remaining" % timer_str
+        elif watch_str:
+            title, sub = "Stopwatch", watch_str
+        elif event is not None and event["start"] - now <= 3600:        # an event within the hour
+            title = event["title"]
+            sub = calendar_events.describe(event, now, lambda t: time.strftime(
+                "%H:%M" if S["clock24"] else "%-I:%M %p", time.localtime(t)))
         else:
             title = _greeting()
             if S["stats"] and raw.cpu is not None and raw.mem is not None:

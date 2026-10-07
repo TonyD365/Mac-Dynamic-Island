@@ -1,4 +1,4 @@
-"""The drop-down under the Focus button: pick a mode, then confirm how long to focus for."""
+"""The drop-down that hangs under a ring button: focus modes and their length, the timer, the shelf."""
 import objc
 from AppKit import (
     NSAppearance, NSAttributedString, NSBackingStoreBuffered, NSBox, NSBoxSeparator, NSButton, NSColor, NSFont,
@@ -7,6 +7,8 @@ from AppKit import (
 )
 
 import focus
+import settings
+import shelf
 from custom_buttons import _Action
 
 WIDTH = 264.0
@@ -25,7 +27,8 @@ class _KeyPanel(NSPanel):
 
     def resignKeyWindow(self):                  # clicked somewhere else
         objc.super(_KeyPanel, self).resignKeyWindow()
-        self.owner.close()
+        if not self.owner.dragging:             # dragging a file out must not fold the panel under it
+            self.owner.close()
 
 
 class FocusPanel:
@@ -35,6 +38,7 @@ class FocusPanel:
         self.anchor = (0.0, 0.0)        # screen point of the panel's top-centre
         self._keep = []
         self.field = None
+        self.dragging = False       # a shelf item is being dragged out
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         self.panel = _KeyPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, WIDTH, 100), style, NSBackingStoreBuffered, False)
@@ -61,9 +65,10 @@ class FocusPanel:
     def frame(self):
         return self.panel.frame()
 
-    def show(self, x, top):
+    def show(self, x, top, view=None):
+        """Hang the panel with its top-centre at (x, top) and fill it with `view` (default: focus modes)."""
         self.anchor = (x, top)
-        self.show_modes()
+        (view or self.show_modes)()
         self.visible = True
         self.panel.makeKeyAndOrderFront_(None)
 
@@ -162,22 +167,7 @@ class FocusPanel:
         rows = [self.row_button("‹  " + mode.get("name", "Focus"), "", self.show_modes),
                 self.label("How long do you want to focus?", 11.5, gray, height=20)]
 
-        line = NSView.alloc().initWithFrame_(NSMakeRect(PAD, 0, WIDTH - 2 * PAD, 30))
-        minus = NSButton.buttonWithTitle_target_action_("−", self.bind(lambda: self.nudge(-5)), "fire:")
-        minus.setFrame_(NSMakeRect(34, 0, 40, 30))
-        self.field = NSTextField.alloc().initWithFrame_(NSMakeRect(80, 4, 56, 22))
-        self.field.setAlignment_(NSTextAlignmentCenter)
-        self.field.setStringValue_(str(mode.get("minutes", 25)))
-        self.field.setTarget_(self.bind(lambda: self.start(mode)))      # Return starts
-        self.field.setAction_("fire:")
-        plus = NSButton.buttonWithTitle_target_action_("+", self.bind(lambda: self.nudge(5)), "fire:")
-        plus.setFrame_(NSMakeRect(142, 0, 40, 30))
-        unit = NSTextField.labelWithString_("minutes")
-        unit.setFrame_(NSMakeRect(186, 6, 60, 18))
-        unit.setTextColor_(gray)
-        for v in (minus, self.field, plus, unit):
-            line.addSubview_(v)
-        rows.append((line, 34.0))
+        rows.append(self.minutes_line(mode.get("minutes", 25), lambda: self.start(mode)))
 
         count = len(mode.get("apps", [])) + len(mode.get("sites", []))
         if mode.get("block") == focus.WHITELIST:
@@ -196,6 +186,25 @@ class FocusPanel:
         self.panel.makeFirstResponder_(self.field)
         self.field.selectText_(None)
 
+    def minutes_line(self, value, on_return):
+        """A row with −, a number field and +; Return in the field calls on_return."""
+        line = NSView.alloc().initWithFrame_(NSMakeRect(PAD, 0, WIDTH - 2 * PAD, 30))
+        minus = NSButton.buttonWithTitle_target_action_("−", self.bind(lambda: self.nudge(-5)), "fire:")
+        minus.setFrame_(NSMakeRect(34, 0, 40, 30))
+        self.field = NSTextField.alloc().initWithFrame_(NSMakeRect(80, 4, 56, 22))
+        self.field.setAlignment_(NSTextAlignmentCenter)
+        self.field.setStringValue_(str(value))
+        self.field.setTarget_(self.bind(on_return))
+        self.field.setAction_("fire:")
+        plus = NSButton.buttonWithTitle_target_action_("+", self.bind(lambda: self.nudge(5)), "fire:")
+        plus.setFrame_(NSMakeRect(142, 0, 40, 30))
+        unit = NSTextField.labelWithString_("minutes")
+        unit.setFrame_(NSMakeRect(186, 6, 60, 18))
+        unit.setTextColor_(NSColor.secondaryLabelColor())
+        for v in (minus, self.field, plus, unit):
+            line.addSubview_(v)
+        return line, 34.0
+
     def minutes(self):
         try:
             value = int(float(self.field.stringValue().strip()))
@@ -213,4 +222,89 @@ class FocusPanel:
             self.field.selectText_(None)
             return
         self.island.start_focus(mode, minutes)
+        self.close()
+
+    # ---- the timer ----
+
+    def show_timer(self):
+        island = self.island
+        self._keep = []
+        self.field = None
+        gray = NSColor.secondaryLabelColor()
+        rows = [self.label("TIMER", 10.5, gray, bold=True, height=18)]
+        if island.timer_end:
+            rows.append(self.label("%s left" % island.countdown(island.timer_end), 13, bold=True, height=22))
+            rows.append(self.row_button("Cancel Timer", "", lambda: (island.cancel_timer(), self.close())))
+            self.layout(rows)
+            return
+        presets = NSView.alloc().initWithFrame_(NSMakeRect(PAD, 0, WIDTH - 2 * PAD, 30))
+        choices = (1, 3, 5, 10, 15, 30)
+        width = (WIDTH - 2 * PAD) / len(choices)
+        for index, minutes in enumerate(choices):
+            b = NSButton.buttonWithTitle_target_action_(
+                str(minutes), self.bind(lambda m=minutes: (island.start_timer(m), self.close())), "fire:")
+            b.setFrame_(NSMakeRect(index * width, 0, width, 30))
+            presets.addSubview_(b)
+        rows.append(self.label("Minutes  ·  click one to start", 11.5, gray, height=20))
+        rows.append((presets, 34.0))
+        rows.append(self.label("Or set your own:", 11.5, gray, height=20))
+        rows.append(self.minutes_line(5, self.start_timer))
+        rows.append((None, 4.0))
+        start = NSButton.buttonWithTitle_target_action_("Start Timer", self.bind(self.start_timer), "fire:")
+        start.setKeyEquivalent_("\r")
+        rows.append((start, 32.0))
+        self.layout(rows)
+        self.panel.makeFirstResponder_(self.field)
+        self.field.selectText_(None)
+
+    def start_timer(self):
+        minutes = self.minutes()
+        if minutes is None:
+            self.field.selectText_(None)
+            return
+        self.island.start_timer(minutes)
+        self.close()
+
+    # ---- the shelf ----
+
+    def show_shelf(self):
+        island = self.island
+        self._keep = []
+        self.field = None
+        gray = NSColor.secondaryLabelColor()
+        if shelf.prune(island.settings):
+            settings.save(island.settings)
+        paths = island.settings["shelf"]
+        rows = [self.label("SHELF", 10.5, gray, bold=True, height=18)]
+        if not paths:
+            empty = NSTextField.wrappingLabelWithString_("Drag files onto the island to keep them here.")
+            empty.setFont_(NSFont.systemFontOfSize_(12))
+            empty.setTextColor_(gray)
+            rows.append((empty, 34.0))
+        else:
+            for path in paths:
+                row = shelf.ShelfRow.alloc().initWithFrame_(NSMakeRect(0, 0, WIDTH - 2 * PAD, shelf.ROW_HEIGHT))
+                rows.append((row.setup(path, self, WIDTH - 2 * PAD), shelf.ROW_HEIGHT))
+            rows.append(self.label("Drag out to use  ·  click to show in Finder", 10.5, gray,
+                                   height=20, center=True))
+            rows.append(self.separator())
+            rows.append(self.row_button("Clear Shelf", "", self.clear_shelf))
+        self.layout(rows)
+
+    def clear_shelf(self):
+        self.island.settings["shelf"][:] = []
+        settings.save(self.island.settings)
+        self.island.update_menu()
+        self.close()
+
+    def drag_started(self):
+        self.dragging = True
+
+    def drag_ended(self, path, dropped):
+        """A shelf item was let go: once it has landed somewhere it leaves the shelf."""
+        self.dragging = False
+        if dropped and path in self.island.settings["shelf"]:
+            self.island.settings["shelf"].remove(path)
+            settings.save(self.island.settings)
+            self.island.update_menu()
         self.close()

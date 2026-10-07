@@ -23,6 +23,10 @@ setup(
             "LSUIElement": True,                 # no Dock icon
             "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
+            "NSCalendarsUsageDescription":
+                "Dynamic Island shows your next calendar event when Calendar Events is switched on.",
+            "NSCalendarsFullAccessUsageDescription":
+                "Dynamic Island shows your next calendar event when Calendar Events is switched on.",
             "NSAppleEventsUsageDescription":
                 "Dynamic Island controls music playback, switches Dark Mode, and checks the current "
                 "browser page while a focus mode that blocks websites is running.",
