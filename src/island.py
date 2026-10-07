@@ -417,18 +417,18 @@ class Island:
         self.date_text = self.text_layer(self.detail, left + 1, base - 34, 72, 9, GRAY, "left",
                                          NSFontWeightSemibold)
         divider = CALayer.layer()
-        divider.setFrame_(NSMakeRect(left + 74, base - 38, 1, 30))
+        divider.setFrame_(NSMakeRect(left + 66, base - 38, 1, 30))
         divider.setCornerRadius_(0.5)
         divider.setBackgroundColor_(FAINT.CGColor())
         self.detail.addSublayer_(divider)
 
-        mx = left + 84                      # middle column
+        mx = left + 74                      # middle column
         ring_x = w / 2 - 30
-        m_right = ring_x - 22
+        m_right = ring_x - 15
         self.title_text = self.text_layer(self.detail, mx, base - 15, m_right - mx, 12, WHITE, "left",
                                           NSFontWeightSemibold)
         self.sub_wide = m_right - mx
-        self.sub_narrow = m_right - mx - 3 * 22  # leave room for the music controls
+        self.sub_narrow = m_right - mx - 3 * 22 - 5  # leave room for the music controls
         self.sub_is_narrow = False
         self.sub_text = self.text_layer(self.detail, mx, base - 33, self.sub_wide, 10, GRAY, "left")
         self.bar = self.group(self.detail)
@@ -447,7 +447,7 @@ class Island:
         _no_anim(lambda: self.bar.setOpacity_(0))
 
         self.music_btns = self.group(self.detail)
-        bx = m_right - 9
+        bx = m_right - 14
         has_music = lambda: self.monitors.music is not None
         self.next_btn = self.button(self.music_btns, bx, base - 33, "forward.fill",
                                     lambda: self.player("next track"), has_music)
@@ -1200,7 +1200,9 @@ class Island:
         else:
             title = _greeting()
             if S["stats"] and raw.cpu is not None and raw.mem is not None:
-                sub = "CPU %d%%  ·  Memory %d%%" % (round(raw.cpu * 100), round(raw.mem * 100))
+                stats = [("CPU", raw.cpu), ("GPU", raw.gpu), ("RAM", raw.mem)]
+                # Thin spaces round the dots keep all three on one line.
+                sub = "\u2009·\u2009".join("%s %d%%" % (name, round(v * 100)) for name, v in stats if v is not None)
             else:
                 sub = "All quiet"
         if bool(music) != self.sub_is_narrow:

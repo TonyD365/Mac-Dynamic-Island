@@ -17,7 +17,8 @@ def dump_diagnostics(island):
     """`kill -USR1 <pid>` writes what the monitors currently see, for troubleshooting."""
     mon = island.monitors
     lines = ["%s = %r" % (k, getattr(mon, k)) for k in
-             ("cam", "mic", "batt", "ac", "music", "volume", "muted", "brightness", "bt", "cpu", "mem", "errors")]
+             ("cam", "mic", "batt", "ac", "music", "volume", "muted", "brightness", "bt", "cpu", "gpu", "mem",
+              "errors")]
     lines += ["locked = %r" % island.locked, "settings = %r" % island.settings,
               "executable = %s" % sys.executable, "PATH = %s" % os.environ.get("PATH")]
     path = os.path.expanduser("~/Library/Application Support/DynamicIsland/diagnostics.txt")

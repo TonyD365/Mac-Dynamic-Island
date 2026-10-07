@@ -169,6 +169,14 @@ def _cpu_ticks():
     return None if err else list(ticks)
 
 
+def gpu_usage():
+    """How busy the GPU is, 0..1 (the busiest one if there are several), or None if macOS doesn't say."""
+    out = subprocess.run(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"],
+                         capture_output=True, encoding="utf-8", errors="replace", timeout=3).stdout
+    values = [int(v) for v in re.findall(r'"Device Utilization %"\s*=\s*(\d+)', out)]
+    return min(1.0, max(values) / 100.0) if values else None
+
+
 def memory_used():
     """Fraction of physical memory in use (active + wired + compressed)."""
     out = subprocess.run(["vm_stat"], capture_output=True, encoding="utf-8", errors="replace", timeout=3).stdout
@@ -233,6 +241,7 @@ class Monitors:
         self.bt = None           # None until the first scan
         self.display_id = None   # built-in display, set by the island once it has found it
         self.cpu = None
+        self.gpu = None
         self.mem = None
         self._ticks = None
 
@@ -282,3 +291,4 @@ class Monitors:
                 self.cpu = 1.0 - delta[2] / total
         self._ticks = ticks
         self.mem = memory_used()
+        self.gpu = gpu_usage()
