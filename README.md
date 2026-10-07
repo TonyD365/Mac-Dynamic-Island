@@ -35,7 +35,7 @@ Click it for a ring of action buttons.
   Click one and its buttons fan out in an **outer ring**. Scroll over either ring to turn it.
 - Time: Focus, Timer, Stopwatch · Media: Previous, Play / Pause, Next, Mute ·
   System: Dark Mode, Keep Awake, Lock Screen, Sleep Display · Tools: Screenshot, Color Picker, Calculator ·
-  Files: Shelf, Downloads, Desktop, Documents, Applications · Apps: Activity Monitor, System Settings, Terminal
+  Files: Downloads, Desktop, Documents, Applications · Apps: Activity Monitor, System Settings, Terminal
 - Your own **custom buttons**: open an app, a file or folder, a website, or run a shell command
 - **Categories** are yours to arrange: add, rename and remove them, and drag buttons between them
 - Scroll on the island itself to change the volume
@@ -46,8 +46,11 @@ Click it for a ring of action buttons.
   it on, because it needs calendar access)
 
 **Shelf**
-- Drag files onto the island to park them, then drag them out again wherever you need them. Only the
-  files' locations are kept; nothing is copied or moved until you drop an item somewhere.
+- Drag files straight onto the island to park them. It opens with a drawer on its right holding
+  their icons; a folder mark beside the battery shows there is something on the Shelf.
+- Hover to open the island and its drawer: drag a file out to use it wherever you need it, click
+  one to show it in Finder, or clear the Shelf with the ✕.
+- Only the files' locations are kept; nothing is copied or moved until you drop an item somewhere.
 
 **Focus modes**
 - Named modes with their own default length; you are asked how long each time you start one
@@ -162,7 +165,7 @@ src/                 the app
   monitors.py          camera, microphone, audio, brightness, battery, Bluetooth, system stats
   actions.py           quick actions behind the ring buttons
   focus.py             focus modes and blocking
-  focus_panel.py       the drop-down under a ring button: focus modes, timer, shelf
+  focus_panel.py       the drop-down under a ring button: focus modes, timer
   focus_editor.py      the Focus Modes window
   custom_buttons.py    custom buttons and their window
   categories_editor.py the Categories window
