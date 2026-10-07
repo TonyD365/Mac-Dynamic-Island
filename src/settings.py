@@ -22,6 +22,7 @@ DEFAULTS = {
     "background_dim": 0.45,
     "lockscreen": True,     # stay visible on the lock screen
     "welcome": True,        # greeting animation after logging in / unlocking
+    "toured": False,        # the guided tour has been shown once
     "auto_update": True,    # download and open new releases without being asked
     "focus_modes": [],      # filled with focus.DEFAULT_MODES on first run; edited in the Focus Modes window
     "calendar": False,      # show the next calendar event (asks for calendar access when switched on)

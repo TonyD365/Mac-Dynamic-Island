@@ -270,6 +270,8 @@ def settings_entries(island):
             toggle("arrow.down.app.fill", "Automatic Updates", "auto_update"),
             entry("set:check", "arrow.triangle.2.circlepath", "Check for Updates", island.update_status,
                   island.check_for_updates),
+            entry("set:tour", "play.rectangle.fill", "Replay the Tour", lambda: "A short walk-through of the island",
+                  island.replay_tour),
         ]),
         group("look", "paintbrush.fill", "Appearance", [
             toggle("sparkles", "Glow Effects", "glow"),

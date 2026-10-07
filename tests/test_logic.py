@@ -559,6 +559,50 @@ class ButtonPictureTests(unittest.TestCase):
         self.assertIsNone(menu.entry("k", "star.fill", "L", lambda: "").image)
 
 
+class ShortcutTests(unittest.TestCase):
+    def test_names_are_read_one_per_line_including_non_ascii(self):
+        with Stub(custom_buttons.subprocess, "run", fake_run("Morning\n今天天气怎么样\n\n  Spaced  \n")):
+            self.assertEqual(custom_buttons.shortcut_names(), ["Morning", "今天天气怎么样", "Spaced"])
+
+    def test_no_tool_means_no_names(self):
+        def missing(*a, **k):
+            raise FileNotFoundError("shortcuts")
+        with Stub(custom_buttons.subprocess, "run", missing):
+            self.assertEqual(custom_buttons.shortcut_names(), [])
+
+    def test_running_a_shortcut_passes_its_name_untouched(self):
+        calls = []
+        with Stub(custom_buttons.subprocess, "Popen", lambda args, **k: calls.append(args)):
+            custom_buttons.run({"kind": "shortcut", "target": "嘿; rm -rf ~"})
+        self.assertEqual(calls, [[custom_buttons.SHORTCUTS_TOOL, "run", "嘿; rm -rf ~"]])     # one argument, no shell
+
+    def test_description(self):
+        self.assertEqual(custom_buttons.describe({"kind": "shortcut", "target": "Morning"}),
+                         "Run Shortcut  ·  Morning")
+
+
+class TourTests(unittest.TestCase):
+    def test_captions_are_short_enough_for_the_island(self):
+        import tour
+        steps = tour.Tour(SimpleNamespace(pulse=None, open_menu=None)).steps()
+        self.assertGreaterEqual(len(steps), 5)
+        for title, subtitle, _ in steps:
+            self.assertLessEqual(len(title), 24, title)
+            self.assertLessEqual(len(subtitle), 30, subtitle)
+
+    def test_it_waits_while_the_screen_is_locked(self):
+        import tour
+        island = SimpleNamespace(locked=True, screen_ok=True)
+        guide = tour.Tour(island)
+        guide.start()
+        self.assertTrue(guide.pending)
+        self.assertFalse(guide.active)
+        island.locked = False
+        guide.start()
+        self.assertTrue(guide.active)
+        self.assertFalse(guide.pending)
+
+
 class SmallThingsTests(unittest.TestCase):
     def test_background_dimming_cycles(self):
         levels = [value for value, _ in backgrounds.DIM_CHOICES]

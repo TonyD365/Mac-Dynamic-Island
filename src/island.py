@@ -38,6 +38,7 @@ import screen as screen_util
 import calendar_events
 import settings
 import shelf
+import tour
 import updater
 from ui import (
     BLACK, BLUE, FAINT, GRAY, GREEN, HOVER, ORANGE, PINK, PURPLE, RED, WHITE, YELLOW,
@@ -153,6 +154,7 @@ class Island:
         self.focus_dropdown = None    # built once the island's window exists
         self.last_block_toast = 0.0
         self.about_window = about.About(self.check_for_updates)
+        self.tour = tour.Tour(self)
         self.timer_end = None         # when the countdown timer finishes
         self.stopwatch_start = None   # when the stopwatch was started
         self.drag_over = False        # files are being dragged over the island
@@ -251,7 +253,12 @@ class Island:
             center.addObserverForName_object_queue_usingBlock_(name, None, None, lambda note, v=value: self.set_locked(v))
             for name, value in (("com.apple.screenIsLocked", True), ("com.apple.screenIsUnlocked", False))]
         self.monitors.calendar_on = self.settings["calendar"]
-        self.welcome_soon(1.2)          # also greets when the island starts at login
+        if self.settings["toured"]:
+            self.welcome_soon(1.2)      # also greets when the island starts at login
+        else:                           # first run: the tour takes the greeting's place
+            self.settings["toured"] = True
+            settings.save(self.settings)
+            self.tour.start()
         self.updater.start()
         self._timer = NSTimer.timerWithTimeInterval_repeats_block_(0.05, True, lambda t: self.tick())
         NSRunLoop.mainRunLoop().addTimer_forMode_(self._timer, NSRunLoopCommonModes)
@@ -298,7 +305,7 @@ class Island:
 
     def drawer_w(self):
         """Width of the Shelf drawer: out while there are files in it, or files are being dragged in."""
-        return SHELF_W if (self.settings["shelf"] or self.drag_over or self.dragging_out) else 0.0
+        return SHELF_W if (self.settings["shelf"] or self.drag_over or self.dragging_out or self.tour.drawer) else 0.0
 
     def layout_rings(self, ext):
         """Place both rings round the expanded island, which reaches `ext` further to the right
@@ -757,6 +764,9 @@ class Island:
     # ---- actions ---------------------------------------------------------
 
     def on_click(self, point):
+        if self.tour.active:                # a click anywhere on the island skips the tour
+            self.tour.stop()
+            return
         if self.mode != "expanded":
             return
         x = point.x - self.win_w / 2
@@ -876,6 +886,10 @@ class Island:
         if self.outer.visible and self.outer.distance(x, y) < self.inner.distance(x, y):
             return self.outer
         return self.inner
+
+    def replay_tour(self):
+        self.close_menu()
+        self.tour.start()
 
     def show_about(self):
         self.close_menu()
@@ -1404,6 +1418,7 @@ class Island:
         w, h = self.size
         on_island = self.on_island = -w / 2 - 3 <= x <= w / 2 + self.ext + 3 and -h - 4 <= y <= 2
         self.pointer = (x, y)
+        self.tour.tick(now)
         file_drag = self.watch_file_drag(now, x, y)
         if self.shelf_done:
             self.shelf_finished()
@@ -1576,10 +1591,13 @@ class Island:
 
         # Expanded: middle column.
         pointed = self.hovered_item() if self.menu_open else None
-        hud_on = bool(self.hud and now < self.hud[1]) and pointed is None and not self.drag_over
+        hud_on = bool(self.hud and now < self.hud[1]) and pointed is None and not self.drag_over \
+            and not self.tour.active
         hud_level = 0.0
         self.draw_shelf()
-        if self.drag_over:
+        if self.tour.active:                    # the tour's captions take over the island
+            title, sub = self.tour.text()
+        elif self.drag_over:
             count = len(S["shelf"])
             title, sub = "Drop to move to the Shelf", "%d item%s there now" % (count, "" if count == 1 else "s")
         elif self.shelf_hover == "clear":
@@ -1632,6 +1650,8 @@ class Island:
                 sub = "\u2009·\u2009".join("%s %d%%" % (name, round(v * 100)) for name, v in stats if v is not None)
             else:
                 sub = "All quiet"
+        if self.tour.active:
+            music = None                    # the tour's captions get the whole middle column
         controls = bool(music and music.get("control"))
         media = bool(music)                 # media layout: both rows move up, progress bar underneath
         if media != self.media_layout:

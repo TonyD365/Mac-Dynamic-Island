@@ -6,7 +6,7 @@ import uuid
 from AppKit import (
     NSApp, NSBackingStoreBuffered, NSBeep, NSBezelBorder, NSBitmapImageRep, NSButton, NSCalibratedRGBColorSpace,
     NSColor, NSCompositingOperationSourceOver, NSFont, NSGraphicsContext, NSImage, NSImageCell, NSMakeRect,
-    NSMenuItem, NSObject, NSOpenPanel, NSPopUpButton, NSScrollView, NSTableColumn, NSTableView,
+    NSMenu, NSMenuItem, NSObject, NSOpenPanel, NSPopUpButton, NSScrollView, NSTableColumn, NSTableView,
     NSTextAlignmentRight, NSTextField, NSURL, NSWindow, NSWindowStyleMaskClosable, NSWindowStyleMaskTitled,
     NSWorkspace,
 )
@@ -19,13 +19,15 @@ KINDS = (
     ("file", "Open File or Folder", "Any file or folder — press Choose…", True),
     ("url", "Open Website", "A web address, e.g. github.com", False),
     ("shell", "Run Shell Command", "A command line, run with your shell", False),
+    ("shortcut", "Run Shortcut", "The name of a shortcut from the Shortcuts app — press Choose…", True),
 )
+SHORTCUTS_TOOL = "/usr/bin/shortcuts"
 ICONS = (
     ("star.fill", "Star"), ("app.fill", "App"), ("folder.fill", "Folder"), ("doc.fill", "Document"),
     ("globe", "Globe"), ("terminal.fill", "Terminal"), ("bolt.fill", "Bolt"), ("heart.fill", "Heart"),
     ("paperplane.fill", "Paper Plane"), ("envelope.fill", "Mail"), ("message.fill", "Message"),
     ("music.note", "Music"), ("gamecontroller.fill", "Game"), ("book.fill", "Book"), ("cart.fill", "Cart"),
-    ("hammer.fill", "Tools"),
+    ("hammer.fill", "Tools"), ("wand.and.stars", "Shortcut"),
 )
 
 
@@ -116,6 +118,18 @@ def run(button):
         subprocess.Popen(["open", target if "://" in target else "https://" + target])
     elif kind == "shell":
         subprocess.Popen(target, shell=True, cwd=os.path.expanduser("~"))
+    elif kind == "shortcut":
+        subprocess.Popen([SHORTCUTS_TOOL, "run", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def shortcut_names():
+    """The user's shortcuts, as the Shortcuts app lists them. Empty if the tool is missing or fails."""
+    try:
+        out = subprocess.run([SHORTCUTS_TOOL, "list"], capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
 
 def describe(button):
@@ -375,8 +389,33 @@ class Editor:
         self.hint.setStringValue_(hint)
         self.choose.setEnabled_(can_choose)
 
+    def choose_shortcut(self):
+        """Pop up the list of the user's shortcuts under the Choose button."""
+        names = shortcut_names()
+        if not names:
+            NSBeep()
+            self.hint.setStringValue_("No shortcuts found — make one in the Shortcuts app first")
+            return
+        pick = NSMenu.alloc().init()
+        for name in names:
+            item = pick.addItemWithTitle_action_keyEquivalent_(name, "fire:", "")
+            item.setTarget_(self.bind(lambda name=name: self.shortcut_chosen(name)))
+        pick.popUpMenuPositioningItem_atLocation_inView_(None, (0, self.choose.frame().size.height), self.choose)
+
+    def shortcut_chosen(self, name):
+        self.target.setStringValue_(name)
+        if not self.name.stringValue().strip():
+            self.name.setStringValue_(name)
+        symbols = [s for s, _ in ICONS]
+        if self.form_picture is None and self.form_symbol == 0:     # still the default star: suggest the wand
+            self.form_symbol = symbols.index("wand.and.stars")
+            self.show_picture(None)
+
     def choose_path(self):
         kind = KINDS[self.kind.indexOfSelectedItem()][0]
+        if kind == "shortcut":
+            self.choose_shortcut()
+            return
         panel = NSOpenPanel.openPanel()
         if kind == "app":
             panel.setDirectoryURL_(NSURL.fileURLWithPath_("/Applications"))
