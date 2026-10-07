@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Build output (run ./build.sh to recreate)
+build/
+dist/
+build.log
+*.egg-info/
+
+# macOS
+.DS_Store
