@@ -509,6 +509,56 @@ class ShelfTests(unittest.TestCase):
         self.assertEqual(shelf._free_name(self.home, "new.txt"), os.path.join(self.home, "new.txt"))
 
 
+class ButtonPictureTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        self.folder = Stub(custom_buttons, "PICTURES", os.path.join(os.path.realpath(self.root.name), "Icons"))
+        self.folder.__enter__()
+        self.icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icon.png")
+
+    def tearDown(self):
+        self.folder.__exit__()
+        self.root.cleanup()
+
+    def test_an_image_file_becomes_a_square_png(self):
+        path = custom_buttons.save_picture(self.icon)
+        self.assertTrue(path.startswith(custom_buttons.PICTURES) and path.endswith(".png"))
+        with open(path, "rb") as f:
+            header = f.read(24)
+        self.assertEqual(header[:8], b"\x89PNG\r\n\x1a\n")
+        width, height = int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+        self.assertEqual((width, height), (custom_buttons.PICTURE_SIZE, custom_buttons.PICTURE_SIZE))
+
+    def test_an_app_gives_its_icon(self):
+        self.assertIsNotNone(custom_buttons.save_picture("/System/Applications/Calculator.app"))
+
+    def test_things_that_are_not_pictures_are_refused(self):
+        self.assertIsNone(custom_buttons.save_picture("/etc/hosts"))
+        self.assertIsNone(custom_buttons.save_picture("/no/such/file.png"))
+        self.assertIsNone(custom_buttons.save_picture(""))
+
+    def test_picture_of_ignores_a_picture_that_has_gone(self):
+        path = custom_buttons.save_picture(self.icon)
+        self.assertEqual(custom_buttons.picture_of({"image": path}), path)
+        os.remove(path)
+        self.assertIsNone(custom_buttons.picture_of({"image": path}))
+        self.assertIsNone(custom_buttons.picture_of({"icon": "star.fill"}))
+
+    def test_unused_pictures_are_tidied_away(self):
+        used = custom_buttons.save_picture(self.icon)
+        unused = custom_buttons.save_picture(self.icon)
+        other = os.path.join(custom_buttons.PICTURES, "notes.txt")          # not ours: left alone
+        open(other, "w").close()
+        custom_buttons.tidy_pictures([{"image": used}, {"icon": "globe"}])
+        self.assertTrue(os.path.exists(used))
+        self.assertFalse(os.path.exists(unused))
+        self.assertTrue(os.path.exists(other))
+
+    def test_a_custom_button_carries_its_picture_into_the_ring(self):
+        self.assertEqual(menu.entry("k", "star.fill", "L", lambda: "", image="/x.png").image, "/x.png")
+        self.assertIsNone(menu.entry("k", "star.fill", "L", lambda: "").image)
+
+
 class SmallThingsTests(unittest.TestCase):
     def test_background_dimming_cycles(self):
         levels = [value for value, _ in backgrounds.DIM_CHOICES]

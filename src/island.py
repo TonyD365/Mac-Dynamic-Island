@@ -683,6 +683,25 @@ class Island:
         def apply():
             layer.setBounds_(NSMakeRect(0, 0, s.width, s.height))
             layer.setContents_(img.layerContentsForContentsScale_(self.scale))
+            layer.setCornerRadius_(0)               # in case this layer last held a picture
+            layer.setMasksToBounds_(False)
+        _no_anim(apply)
+
+    def set_picture(self, layer, path, side=24.0):
+        """Show a picture (a custom button's app icon or image) in a layer that normally holds a symbol."""
+        key = ("picture", path)
+        if self._symbol_cache.get(id(layer)) == key:
+            return
+        self._symbol_cache[id(layer)] = key
+        image = NSImage.alloc().initWithContentsOfFile_(path)
+        if image is None:
+            return
+
+        def apply():
+            layer.setBounds_(NSMakeRect(0, 0, side, side))
+            layer.setContents_(image)
+            layer.setCornerRadius_(side * 0.22)     # softens the corners of a plain photo
+            layer.setMasksToBounds_(True)
         _no_anim(apply)
 
     def set_text(self, layer, s):

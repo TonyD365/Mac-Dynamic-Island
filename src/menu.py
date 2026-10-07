@@ -35,10 +35,11 @@ CATEGORY_ICONS = (
 )
 
 
-def entry(key, symbol, label, status, action=None, on=None, safe=False, children=None):
-    """One ring button. `children` (a list of entries) makes it open the outer ring instead of acting."""
+def entry(key, symbol, label, status, action=None, on=None, safe=False, children=None, image=None):
+    """One ring button. `children` (a list of entries) makes it open the outer ring instead of acting.
+    `image` is the path of a picture to show in place of the symbol."""
     return SimpleNamespace(key=key, symbol=symbol, label=label, status=status, action=action, on=on,
-                           safe=safe, children=children)
+                           safe=safe, children=children, image=image)
 
 
 def custom_id(button):
@@ -96,6 +97,16 @@ def unused(values):
 def all_ids(values):
     return ([item for category in DEFAULT_CATEGORIES for item in category["items"]]
             + [custom_id(b) for b in values["custom_buttons"] if b.get("id")])
+
+
+def list_image(values, item):
+    """The image to show beside a button in the Categories window."""
+    if item.startswith("custom:"):
+        button = next((b for b in values["custom_buttons"] if custom_id(b) == item), None)
+        if button is not None:
+            return custom_buttons.button_image(button)
+    from AppKit import NSImage
+    return NSImage.imageWithSystemSymbolName_accessibilityDescription_(describe_id(values, item)[0], None)
 
 
 def describe_id(values, item):
@@ -190,7 +201,8 @@ def actions(island):
         if button.get("id"):
             found[custom_id(button)] = entry(
                 custom_id(button), button.get("icon", "star.fill"), button.get("name", "Custom"),
-                lambda b=button: custom_buttons.describe(b), lambda b=button: island.run_custom(b))
+                lambda b=button: custom_buttons.describe(b), lambda b=button: island.run_custom(b),
+                image=custom_buttons.picture_of(button))
     return found
 
 

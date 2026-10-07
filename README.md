@@ -36,7 +36,8 @@ Click it for a ring of action buttons.
 - Time: Focus, Timer, Stopwatch · Media: Previous, Play / Pause, Next, Mute ·
   System: Dark Mode, Keep Awake, Lock Screen, Sleep Display · Tools: Screenshot, Color Picker, Calculator ·
   Files: Downloads, Desktop, Documents, Applications · Apps: Activity Monitor, System Settings, Terminal
-- Your own **custom buttons**: open an app, a file or folder, a website, or run a shell command
+- Your own **custom buttons**: open an app, a file or folder, a website, or run a shell command.
+  Each can show a symbol, an app's icon, or any picture you choose
 - **Categories** are yours to arrange: add, rename and remove them, and drag buttons between them
 - Scroll on the island itself to change the volume
 
