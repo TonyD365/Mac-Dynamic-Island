@@ -75,6 +75,12 @@ class IslandView(NSView):
     def mouseDown_(self, event):
         self.on_click(event.locationInWindow())
 
+    def mouseDragged_(self, event):
+        self.on_drag(event.locationInWindow())
+
+    def mouseUp_(self, event):
+        self.on_release(event.locationInWindow())
+
     def scrollWheel_(self, event):
         self.on_scroll(event.scrollingDeltaY(), event.hasPreciseScrollingDeltas())
 
@@ -131,6 +137,8 @@ class Island:
         self.focus_dropdown = None    # built once the island's window exists
         self.hidden_slots = ()        # ring buttons tucked away while the focus drop-down covers them
         self.last_block_toast = 0.0
+        self.seeking = None           # fraction 0..1 while the progress bar is being dragged
+        self.media_layout = None      # whether the middle column is laid out for media right now
         self.updater = updater.Updater(lambda: self.settings["auto_update"])
         self.update_seen = None       # (state, version) already announced
         self.update_opened = None     # version whose installer has been opened
@@ -181,6 +189,8 @@ class Island:
         self.view = IslandView.alloc().initWithFrame_(NSMakeRect(0, 0, 100, 100))
         self.view.on_click = self.on_click
         self.view.on_scroll = self.on_scroll
+        self.view.on_drag = self.on_drag
+        self.view.on_release = self.on_release
         self.root = CALayer.layer()
         self.view.setLayer_(self.root)
         self.view.setWantsLayer_(True)
@@ -417,18 +427,20 @@ class Island:
         self.date_text = self.text_layer(self.detail, left + 1, base - 34, 72, 9, GRAY, "left",
                                          NSFontWeightSemibold)
         divider = CALayer.layer()
-        divider.setFrame_(NSMakeRect(left + 74, base - 38, 1, 30))
+        divider.setFrame_(NSMakeRect(left + 66, base - 38, 1, 30))
         divider.setCornerRadius_(0.5)
         divider.setBackgroundColor_(FAINT.CGColor())
         self.detail.addSublayer_(divider)
 
-        mx = left + 84                      # middle column
+        mx = left + 74                      # middle column
         ring_x = w / 2 - 30
-        m_right = ring_x - 22
+        m_right = ring_x - 15
         self.title_text = self.text_layer(self.detail, mx, base - 15, m_right - mx, 12, WHITE, "left",
                                           NSFontWeightSemibold)
+        self.rows = (base - 15, base - 33)        # title / subtitle centres normally...
+        self.media_rows = (base - 12, base - 27)  # ...and moved up to make room for the progress bar
         self.sub_wide = m_right - mx
-        self.sub_narrow = m_right - mx - 3 * 22  # leave room for the music controls
+        self.sub_narrow = m_right - mx - 3 * 22 - 5  # leave room for the music controls
         self.sub_is_narrow = False
         self.sub_text = self.text_layer(self.detail, mx, base - 33, self.sub_wide, 10, GRAY, "left")
         self.bar = self.group(self.detail)
@@ -446,14 +458,34 @@ class Island:
         self.bar.addSublayer_(self.bar_fill)
         _no_anim(lambda: self.bar.setOpacity_(0))
 
+        # Playback progress: a thin bar under the two rows; click or drag it to seek.
+        self.progress = self.group(self.detail)
+        self.prog_x, self.prog_w, self.prog_y = mx, m_right - mx - 2, base - 38.5
+        rail = CALayer.layer()
+        rail.setFrame_(NSMakeRect(self.prog_x, self.prog_y - 1.5, self.prog_w, 3))
+        rail.setCornerRadius_(1.5)
+        rail.setBackgroundColor_(NSColor.colorWithWhite_alpha_(1.0, 0.22).CGColor())
+        self.prog_fill = CALayer.layer()
+        self.prog_fill.setAnchorPoint_((0, 0.5))
+        self.prog_fill.setPosition_((self.prog_x, self.prog_y))
+        self.prog_fill.setCornerRadius_(1.5)
+        self.prog_fill.setBackgroundColor_(WHITE.CGColor())
+        self.prog_knob = CALayer.layer()
+        self.prog_knob.setBounds_(NSMakeRect(0, 0, 9, 9))
+        self.prog_knob.setCornerRadius_(4.5)
+        self.prog_knob.setBackgroundColor_(WHITE.CGColor())
+        for l in (rail, self.prog_fill, self.prog_knob):
+            self.progress.addSublayer_(l)
+        _no_anim(lambda: self.progress.setOpacity_(0))
+
         self.music_btns = self.group(self.detail)
-        bx = m_right - 9
-        has_music = lambda: self.monitors.music is not None
-        self.next_btn = self.button(self.music_btns, bx, base - 33, "forward.fill",
+        bx = m_right - 14
+        has_music = lambda: bool(self.monitors.music and self.monitors.music.get("control"))
+        self.next_btn = self.button(self.music_btns, bx, base - 27, "forward.fill",
                                     lambda: self.player("next track"), has_music)
-        self.play_btn = self.button(self.music_btns, bx - 22, base - 33, "play.fill",
+        self.play_btn = self.button(self.music_btns, bx - 22, base - 27, "play.fill",
                                     lambda: self.player("playpause"), has_music)
-        self.prev_btn = self.button(self.music_btns, bx - 44, base - 33, "backward.fill",
+        self.prev_btn = self.button(self.music_btns, bx - 44, base - 27, "backward.fill",
                                     lambda: self.player("previous track"), has_music)
 
         # Battery ring with the percentage inside
@@ -601,6 +633,10 @@ class Island:
             return
         x = point.x - self.win_w / 2
         y = point.y - self.win_h
+        if self.can_seek() and self.prog_x - 6 <= x <= self.prog_x + self.prog_w + 6 and abs(y - self.prog_y) <= 8:
+            self.seeking = self.seek_fraction(x)      # dragging continues in on_drag
+            self.refresh(time.time())
+            return
         if self.menu_open:
             for i, (bx, by) in enumerate(self.menu_pos):
                 if (x - bx) ** 2 + (y - by) ** 2 <= (MENU_R + 2) ** 2:
@@ -923,8 +959,39 @@ class Island:
 
     def player(self, command):
         m = self.monitors.music
-        if m:
-            monitors.player_command(m["app"], command)
+        if not (m and m.get("control")):
+            return
+        monitors.media_command(m, command)
+        self.monitors.music_hold = time.time() + 1.2
+        if command == "playpause":          # show the new state at once; the next reading confirms it
+            m["position"], m["at"] = monitors.position_now(m), time.time()
+            m["playing"] = not m["playing"]
+        self.refresh(time.time())
+
+    # ---- seeking ----
+
+    def can_seek(self):
+        m = self.monitors.music if self.settings["music"] else None
+        return bool(m and m.get("control") == monitors.SYSTEM and m.get("duration", 0) > 0 and not self.locked)
+
+    def seek_fraction(self, x):
+        return max(0.0, min(1.0, (x - self.prog_x) / self.prog_w))
+
+    def on_drag(self, point):
+        if self.seeking is not None:
+            self.seeking = self.seek_fraction(point.x - self.win_w / 2)
+            self.refresh(time.time())
+
+    def on_release(self, point):
+        if self.seeking is None:
+            return
+        fraction, self.seeking = self.seek_fraction(point.x - self.win_w / 2), None
+        m = self.monitors.music
+        if m and m.get("duration"):
+            m["position"], m["at"] = fraction * m["duration"], time.time()
+            self.monitors.music_hold = time.time() + 1.2
+            monitors.media_seek(m["position"])
+        self.refresh(time.time())
 
     # ---- updates ----
 
@@ -1064,7 +1131,7 @@ class Island:
             self.refresh(now)
         # While the ring is open its whole area takes the mouse, so scrolling anywhere in it turns the ring.
         in_ring = self.menu_open and abs(x) <= self.ring_half_w and -self.ring_depth <= y <= 2
-        inside = on_island or hovered is not None or in_ring
+        inside = on_island or hovered is not None or in_ring or self.seeking is not None
         if self.focus_dropdown is not None and self.focus_dropdown.visible:
             f = self.focus_dropdown.frame()         # the drop-down sits under this window: let clicks reach it
             if f.origin.x <= m.x <= f.origin.x + f.size.width and f.origin.y <= m.y <= f.origin.y + f.size.height:
@@ -1121,7 +1188,7 @@ class Island:
             elif p_ac is not None and mon.ac != p_ac and S["power"]:
                 self.toast("Charging" if mon.ac else "On battery", "%d%% charged" % mon.batt, YELLOW)
             elif track and track != p_track:
-                self.toast(track[0], track[1], PINK)
+                self.toast(track[0], track[1] or music["app"], PINK)
         self.prev = snap
 
         bt = raw.bt
@@ -1194,23 +1261,49 @@ class Island:
             title = " + ".join(n for n, on in (("Camera", mon.cam), ("Microphone", mon.mic)) if on) + " in use"
             sub = "Live now"
         elif music:
-            title, sub = music["title"], music["artist"]
+            title, sub = music["title"], music["artist"] or music["app"]
+            if self.seeking is not None:        # while dragging, the subtitle shows where you'd land
+                clock = lambda t: "%d:%02d:%02d" % (t // 3600, t % 3600 // 60, t % 60) if t >= 3600 \
+                    else "%d:%02d" % (t // 60, t % 60)
+                sub = "%s / %s" % (clock(self.seeking * music["duration"]), clock(music["duration"]))
         elif pomo_str:
             title, sub = (self.focus_mode or {}).get("name", "Focus"), "%s remaining" % pomo_str
         else:
             title = _greeting()
             if S["stats"] and raw.cpu is not None and raw.mem is not None:
-                sub = "CPU %d%%  ·  Memory %d%%" % (round(raw.cpu * 100), round(raw.mem * 100))
+                stats = [("CPU", raw.cpu), ("GPU", raw.gpu), ("RAM", raw.mem)]
+                # Thin spaces round the dots keep all three on one line.
+                sub = "\u2009·\u2009".join("%s %d%%" % (name, round(v * 100)) for name, v in stats if v is not None)
             else:
                 sub = "All quiet"
-        if bool(music) != self.sub_is_narrow:
-            self.sub_is_narrow = bool(music)
+        controls = bool(music and music.get("control"))
+        media = bool(music)                 # media layout: both rows move up, progress bar underneath
+        if media != self.media_layout:
+            self.media_layout = media
+            for layer, y in zip((self.title_text, self.sub_text), self.media_rows if media else self.rows):
+                f = layer.frame()
+                _no_anim(lambda layer=layer, f=f, y=y: layer.setFrame_(
+                    NSMakeRect(f.origin.x, y - f.size.height / 2, f.size.width, f.size.height)))
+        duration = music.get("duration", 0) if music else 0
+        show_progress = bool(duration) and not hud_on
+        self.progress.setOpacity_(1 if show_progress else 0)
+        if show_progress:
+            fraction = self.seeking if self.seeking is not None else monitors.position_now(music) / duration
+            width = self.prog_w * fraction
+
+            def place():
+                self.prog_fill.setBounds_(NSMakeRect(0, 0, max(3.0, width), 3))
+                self.prog_knob.setPosition_((self.prog_x + width, self.prog_y))
+                self.prog_knob.setOpacity_(1 if self.can_seek() else 0)
+            _no_anim(place)
+        if controls != self.sub_is_narrow:
+            self.sub_is_narrow = controls
             f = self.sub_text.frame()
-            width = self.sub_narrow if music else self.sub_wide
+            width = self.sub_narrow if controls else self.sub_wide
             _no_anim(lambda: self.sub_text.setFrame_(NSMakeRect(f.origin.x, f.origin.y, width, f.size.height)))
         self.set_text(self.title_text, title)
         self.set_text(self.sub_text, sub)
-        self.music_btns.setOpacity_(1 if (music and not hud_on) else 0)
+        self.music_btns.setOpacity_(1 if (controls and not hud_on) else 0)
         self.bar.setOpacity_(1 if hud_on else 0)
         _no_anim(lambda: self.bar_fill.setBounds_(NSMakeRect(0, 0, max(4.0, self.bar_w * hud_level), 4)))
         self.set_symbol(self.play_btn, "pause.fill" if playing else "play.fill", WHITE)
