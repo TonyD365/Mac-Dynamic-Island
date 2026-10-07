@@ -465,6 +465,20 @@ class Island:
         for l in (shell, nub, self.batt_fill):
             self.batt_glyph.addSublayer_(l)
 
+        # Tour controls, either side of the notch while the tour runs: Skip on the left, Next on the right.
+        self.tour_skip = self.text_layer(self.island, lx - EAR / 2, mid, EAR, 10.5, GRAY, "center")
+        self.set_text(self.tour_skip, "Skip")
+        self.tour_next = CALayer.layer()
+        self.tour_next.setBounds_(NSMakeRect(0, 0, 42, 18))
+        self.tour_next.setPosition_((rx, mid))
+        self.tour_next.setCornerRadius_(9)
+        self.tour_next.setBackgroundColor_(WHITE.CGColor())
+        self.island.addSublayer_(self.tour_next)
+        self.tour_next_text = self.text_layer(self.tour_next, 0, 9, 42, 10.5, BLACK, "center", NSFontWeightSemibold)
+        for layer in (self.tour_skip, self.tour_next):
+            layer.setZPosition_(10)             # above the expanded content and its background picture
+        _no_anim(lambda: (self.tour_skip.setOpacity_(0), self.tour_next.setOpacity_(0)))
+
         # Folder mark, shown beside the notch (left of the battery) while the Shelf holds something.
         self.shelf_mark = self.symbol_layer(self.ambient, self.nw / 2 + 13, mid)
         self.set_symbol(self.shelf_mark, "folder.fill", WHITE, 11.0)
@@ -764,13 +778,19 @@ class Island:
     # ---- actions ---------------------------------------------------------
 
     def on_click(self, point):
-        if self.tour.active:                # a click anywhere on the island skips the tour
-            self.tour.stop()
-            return
         if self.mode != "expanded":
             return
         x = point.x - self.win_w / 2
         y = point.y - self.win_h
+        if self.tour.active:
+            half = self.nh / 2
+            if abs(x - self.lx) <= 24 and abs(y - self.mid) <= half:
+                self.tour.stop()                    # Skip
+                return
+            if self.tour.shows_next() and abs(x - self.rx) <= 26 and abs(y - self.mid) <= half:
+                self.tour.advance()                 # Next / Done
+                self.refresh(time.time())
+                return
         if self.can_seek() and self.prog_x - 6 <= x <= self.prog_x + self.prog_w + 6 and abs(y - self.prog_y) <= 8:
             self.seeking = self.seek_fraction(x)      # dragging continues in on_drag
             self.refresh(time.time())
@@ -807,6 +827,9 @@ class Island:
         """A ring button was clicked: open its outer ring, or do what it does."""
         item = which.shown()[slot]
         self.last_click = which.pos[slot]
+        if self.tour.active and not self.tour.allows(item):
+            self.pulse(GRAY)                        # during the tour, buttons don't do their real job
+            return
         if item.children is not None:
             if self.open_entry == item.key:
                 self.close_outer()
@@ -886,6 +909,15 @@ class Island:
         if self.outer.visible and self.outer.distance(x, y) < self.inner.distance(x, y):
             return self.outer
         return self.inner
+
+    def refresh_tour_controls(self):
+        """Show Skip and Next while the tour runs, in place of what normally sits beside the notch."""
+        running = self.tour.active
+        self.ears.setOpacity_(0 if running else 1)
+        self.tour_skip.setOpacity_(1 if running else 0)
+        self.tour_next.setOpacity_(1 if self.tour.shows_next() else 0)
+        if running:
+            self.set_text(self.tour_next_text, self.tour.next_label())
 
     def replay_tour(self):
         self.close_menu()
@@ -1203,6 +1235,7 @@ class Island:
             if abs(self.scroll_acc) >= notch and now - self.last_rotate >= 0.08:
                 self.last_rotate = now
                 if self.ring_under(*self.pointer).rotate(1 if self.scroll_acc < 0 else -1):
+                    self.tour.turned = True
                     self.refresh(now)
                 self.scroll_acc = 0.0
             return
@@ -1210,6 +1243,7 @@ class Island:
         if not self.settings["scroll_volume"] or raw.volume is None:
             return
         delta = max(-20.0, min(20.0, delta)) if precise else max(-2.0, min(2.0, delta))   # tame fast flicks
+        self.tour.volume = True
         raw.volume = max(0.0, min(1.0, raw.volume + delta * (0.003 if precise else 0.03)))
         monitors.set_volume(raw.volume)
 

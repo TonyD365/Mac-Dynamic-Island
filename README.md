@@ -69,7 +69,8 @@ Click it for a ring of action buttons.
 - Background pictures for the expanded island: built-in macOS landscapes or your own image
 - Launch at login
 - Updates itself from this repository's releases
-- A short guided tour the first time it runs; replay it from Settings → General
+- A hands-on tour the first time it runs: it asks you to try each thing and moves on when you
+  have. Replay it from Settings → General
 - Works on Macs with and without a notch, on Apple silicon and Intel
 
 ## Install

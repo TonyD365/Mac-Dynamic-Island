@@ -582,23 +582,112 @@ class ShortcutTests(unittest.TestCase):
 
 
 class TourTests(unittest.TestCase):
+    def island(self, **state):
+        """Just enough of an island for the tour's bookkeeping."""
+        calls = []
+        base = dict(locked=False, screen_ok=True, on_island=False, menu_open=False, menu_page="main",
+                    peek_until=0.0, menu_seen=0.0, settings={"shelf": []}, calls=calls,
+                    outer=SimpleNamespace(visible=False),
+                    pulse=lambda color: None, refresh_tour_controls=lambda: None,
+                    close_outer=lambda: None, set_page=lambda page: None)
+        base.update(state)
+        island = SimpleNamespace(**base)
+        island.open_menu = lambda: (calls.append("open"), setattr(island, "menu_open", True))
+        island.close_menu = lambda: (calls.append("close"), setattr(island, "menu_open", False))
+        return island
+
+    def run_until_moved(self, guide, now=0.0):
+        """Tick until the tour leaves the stop it is on (or a second of its time passes)."""
+        import tour
+        start = guide.index
+        for step in range(40):
+            guide.tick(now + step * 0.05)
+            if guide.index != start or not guide.active:
+                return True
+        return False
+
     def test_captions_are_short_enough_for_the_island(self):
         import tour
-        steps = tour.Tour(SimpleNamespace(pulse=None, open_menu=None)).steps()
-        self.assertGreaterEqual(len(steps), 5)
-        for title, subtitle, _ in steps:
-            self.assertLessEqual(len(title), 24, title)
-            self.assertLessEqual(len(subtitle), 30, subtitle)
+        steps = tour.Tour(self.island()).steps()
+        self.assertGreaterEqual(len(steps), 8)
+        for step in steps:
+            self.assertLessEqual(len(step.title), 24, step.title)
+            self.assertLessEqual(len(step.subtitle), 30, step.subtitle)
+
+    def test_next_shows_only_where_nothing_has_to_be_done(self):
+        import tour
+        for step in tour.Tour(self.island()).steps():
+            if step.done is None:
+                self.assertTrue(step.next_button, step.title)
+        required = [s.title for s in tour.Tour(self.island()).steps() if s.done is not None and not s.next_button]
+        self.assertIn("Click the island", required)
+        self.assertIn("Click a category", required)
+
+    def test_a_stop_waits_for_the_user_and_then_moves_on(self):
+        import tour
+        island = self.island()
+        guide = tour.Tour(island)
+        guide.start()
+        self.assertEqual(guide.text()[0], "Welcome")
+        self.assertTrue(guide.shows_next())
+        guide.advance()                                             # the user presses Next
+        self.assertEqual(guide.text()[0], "Point at the island")
+        self.assertFalse(guide.shows_next())                        # something has to be done here
+        self.assertFalse(self.run_until_moved(guide))               # and until it is, the tour stays put
+        island.on_island = True
+        self.assertTrue(self.run_until_moved(guide, 10.0))
+        self.assertEqual(guide.text()[0], "Click the island")
+
+    def test_rings_are_kept_open_where_a_stop_needs_them(self):
+        import tour
+        island = self.island(on_island=True)
+        guide = tour.Tour(island)
+        guide.start()
+        guide.index = 2                                             # at "Click the island"...
+        island.menu_open = True                                     # ...and the user clicks it
+        self.assertTrue(self.run_until_moved(guide))
+        self.assertEqual(guide.text()[0], "Click a category")
+        island.menu_open = False                                    # a stray click folded them
+        guide.tick(100.0)
+        self.assertTrue(island.menu_open)
+
+    def test_the_drag_it_out_stop_is_left_out_if_nothing_was_added(self):
+        import tour
+        island = self.island()
+        guide = tour.Tour(island)
+        guide.start()
+        titles = []
+        while guide.active:
+            titles.append(guide.text()[0])
+            guide.advance()                                         # Next all the way through
+        self.assertNotIn("Drag it out again", titles)
+        self.assertEqual(titles[-1], "That's the tour")
+
+        island = self.island()
+        guide = tour.Tour(island)
+        guide.start()
+        while guide.text()[0] != "Drag a file onto me":
+            guide.advance()
+        island.settings["shelf"].append("/a/file")                  # the user drops one
+        guide.advance()
+        self.assertEqual(guide.text()[0], "Drag it out again")
+
+    def test_buttons_do_nothing_real_during_the_tour(self):
+        import tour
+        guide = tour.Tour(self.island())
+        self.assertTrue(guide.allows(SimpleNamespace(children=[1], key="category:0")))
+        self.assertTrue(guide.allows(SimpleNamespace(children=None, key="settings")))
+        self.assertFalse(guide.allows(SimpleNamespace(children=None, key="lock")))
 
     def test_it_waits_while_the_screen_is_locked(self):
         import tour
-        island = SimpleNamespace(locked=True, screen_ok=True)
+        island = self.island(locked=True)
         guide = tour.Tour(island)
         guide.start()
         self.assertTrue(guide.pending)
         self.assertFalse(guide.active)
         island.locked = False
-        guide.start()
+        guide.tick(0.0)
         self.assertTrue(guide.active)
         self.assertFalse(guide.pending)
 
