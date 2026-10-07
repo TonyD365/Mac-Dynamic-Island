@@ -38,6 +38,7 @@ import screen as screen_util
 import calendar_events
 import settings
 import shelf
+import tour
 import updater
 from ui import (
     BLACK, BLUE, FAINT, GRAY, GREEN, HOVER, ORANGE, PINK, PURPLE, RED, WHITE, YELLOW,
@@ -153,6 +154,7 @@ class Island:
         self.focus_dropdown = None    # built once the island's window exists
         self.last_block_toast = 0.0
         self.about_window = about.About(self.check_for_updates)
+        self.tour = tour.Tour(self)
         self.timer_end = None         # when the countdown timer finishes
         self.stopwatch_start = None   # when the stopwatch was started
         self.drag_over = False        # files are being dragged over the island
@@ -188,6 +190,8 @@ class Island:
         self.levels = None        # last seen (volume, muted, brightness)
         self.hud = None           # ("volume" | "brightness", visible-until time)
         self.prev_bt = None
+        self.power_quiet_until = 0.0   # no brightness bar until then: the power source has just changed
+        self.power_checked = 0.0       # when the power source was last read on the spot
         self.scroll_acc = 0.0
         self.last_rotate = 0.0
         self.on_island = False    # pointer is over the island itself
@@ -251,7 +255,12 @@ class Island:
             center.addObserverForName_object_queue_usingBlock_(name, None, None, lambda note, v=value: self.set_locked(v))
             for name, value in (("com.apple.screenIsLocked", True), ("com.apple.screenIsUnlocked", False))]
         self.monitors.calendar_on = self.settings["calendar"]
-        self.welcome_soon(1.2)          # also greets when the island starts at login
+        if self.settings["toured"]:
+            self.welcome_soon(1.2)      # also greets when the island starts at login
+        else:                           # first run: the tour takes the greeting's place
+            self.settings["toured"] = True
+            settings.save(self.settings)
+            self.tour.start()
         self.updater.start()
         self._timer = NSTimer.timerWithTimeInterval_repeats_block_(0.05, True, lambda t: self.tick())
         NSRunLoop.mainRunLoop().addTimer_forMode_(self._timer, NSRunLoopCommonModes)
@@ -298,7 +307,7 @@ class Island:
 
     def drawer_w(self):
         """Width of the Shelf drawer: out while there are files in it, or files are being dragged in."""
-        return SHELF_W if (self.settings["shelf"] or self.drag_over or self.dragging_out) else 0.0
+        return SHELF_W if (self.settings["shelf"] or self.drag_over or self.dragging_out or self.tour.drawer) else 0.0
 
     def layout_rings(self, ext):
         """Place both rings round the expanded island, which reaches `ext` further to the right
@@ -457,6 +466,20 @@ class Island:
         self.batt_fill.setPosition_((rx - 10.5, mid))
         for l in (shell, nub, self.batt_fill):
             self.batt_glyph.addSublayer_(l)
+
+        # Tour controls, either side of the notch while the tour runs: Skip on the left, Next on the right.
+        self.tour_skip = self.text_layer(self.island, lx - EAR / 2, mid, EAR, 10.5, GRAY, "center")
+        self.set_text(self.tour_skip, "Skip")
+        self.tour_next = CALayer.layer()
+        self.tour_next.setBounds_(NSMakeRect(0, 0, 42, 18))
+        self.tour_next.setPosition_((rx, mid))
+        self.tour_next.setCornerRadius_(9)
+        self.tour_next.setBackgroundColor_(WHITE.CGColor())
+        self.island.addSublayer_(self.tour_next)
+        self.tour_next_text = self.text_layer(self.tour_next, 0, 9, 42, 10.5, BLACK, "center", NSFontWeightSemibold)
+        for layer in (self.tour_skip, self.tour_next):
+            layer.setZPosition_(10)             # above the expanded content and its background picture
+        _no_anim(lambda: (self.tour_skip.setOpacity_(0), self.tour_next.setOpacity_(0)))
 
         # Folder mark, shown beside the notch (left of the battery) while the Shelf holds something.
         self.shelf_mark = self.symbol_layer(self.ambient, self.nw / 2 + 13, mid)
@@ -683,6 +706,25 @@ class Island:
         def apply():
             layer.setBounds_(NSMakeRect(0, 0, s.width, s.height))
             layer.setContents_(img.layerContentsForContentsScale_(self.scale))
+            layer.setCornerRadius_(0)               # in case this layer last held a picture
+            layer.setMasksToBounds_(False)
+        _no_anim(apply)
+
+    def set_picture(self, layer, path, side=24.0):
+        """Show a picture (a custom button's app icon or image) in a layer that normally holds a symbol."""
+        key = ("picture", path)
+        if self._symbol_cache.get(id(layer)) == key:
+            return
+        self._symbol_cache[id(layer)] = key
+        image = NSImage.alloc().initWithContentsOfFile_(path)
+        if image is None:
+            return
+
+        def apply():
+            layer.setBounds_(NSMakeRect(0, 0, side, side))
+            layer.setContents_(image)
+            layer.setCornerRadius_(side * 0.22)     # softens the corners of a plain photo
+            layer.setMasksToBounds_(True)
         _no_anim(apply)
 
     def set_text(self, layer, s):
@@ -742,6 +784,15 @@ class Island:
             return
         x = point.x - self.win_w / 2
         y = point.y - self.win_h
+        if self.tour.active:
+            half = self.nh / 2
+            if abs(x - self.lx) <= 24 and abs(y - self.mid) <= half:
+                self.tour.stop()                    # Skip
+                return
+            if self.tour.shows_next() and abs(x - self.rx) <= 26 and abs(y - self.mid) <= half:
+                self.tour.advance()                 # Next / Done
+                self.refresh(time.time())
+                return
         if self.can_seek() and self.prog_x - 6 <= x <= self.prog_x + self.prog_w + 6 and abs(y - self.prog_y) <= 8:
             self.seeking = self.seek_fraction(x)      # dragging continues in on_drag
             self.refresh(time.time())
@@ -778,6 +829,9 @@ class Island:
         """A ring button was clicked: open its outer ring, or do what it does."""
         item = which.shown()[slot]
         self.last_click = which.pos[slot]
+        if self.tour.active and not self.tour.allows(item):
+            self.pulse(GRAY)                        # during the tour, buttons don't do their real job
+            return
         if item.children is not None:
             if self.open_entry == item.key:
                 self.close_outer()
@@ -857,6 +911,19 @@ class Island:
         if self.outer.visible and self.outer.distance(x, y) < self.inner.distance(x, y):
             return self.outer
         return self.inner
+
+    def refresh_tour_controls(self):
+        """Show Skip and Next while the tour runs, in place of what normally sits beside the notch."""
+        running = self.tour.active
+        self.ears.setOpacity_(0 if running else 1)
+        self.tour_skip.setOpacity_(1 if running else 0)
+        self.tour_next.setOpacity_(1 if self.tour.shows_next() else 0)
+        if running:
+            self.set_text(self.tour_next_text, self.tour.next_label())
+
+    def replay_tour(self):
+        self.close_menu()
+        self.tour.start()
 
     def show_about(self):
         self.close_menu()
@@ -1170,6 +1237,7 @@ class Island:
             if abs(self.scroll_acc) >= notch and now - self.last_rotate >= 0.08:
                 self.last_rotate = now
                 if self.ring_under(*self.pointer).rotate(1 if self.scroll_acc < 0 else -1):
+                    self.tour.turned = True
                     self.refresh(now)
                 self.scroll_acc = 0.0
             return
@@ -1177,6 +1245,7 @@ class Island:
         if not self.settings["scroll_volume"] or raw.volume is None:
             return
         delta = max(-20.0, min(20.0, delta)) if precise else max(-2.0, min(2.0, delta))   # tame fast flicks
+        self.tour.volume = True
         raw.volume = max(0.0, min(1.0, raw.volume + delta * (0.003 if precise else 0.03)))
         monitors.set_volume(raw.volume)
 
@@ -1193,10 +1262,39 @@ class Island:
             kind = "volume"
         elif changed(new[2], old[2], 0.03):     # ignores the slow drift of auto-brightness
             kind = "brightness"
+        if kind == "brightness" and self.power_just_changed(now):
+            return                              # macOS adjusting for the charger: the power alert says it all
         if kind:
             self.hud = (kind, now + 1.6)
             self.peek_until = max(self.peek_until, now + 1.6)
             self.refresh(now)
+
+    def power_just_changed(self, now):
+        """Is this brightness change macOS reacting to the charger being plugged in or pulled out?
+
+        macOS changes the brightness the instant the power source changes, which is sooner than the
+        regular battery reading notices. So when the brightness moves, the power source is read on
+        the spot; if it has changed, the brightness bar stays away for a few seconds (macOS fades
+        the brightness over a moment) and the power alert is shown instead.
+        """
+        if now < self.power_quiet_until:
+            return True
+        if now - self.power_checked < 1.0:      # one reading covers a whole run of brightness steps
+            return False
+        self.power_checked = now
+        raw = self.monitors
+        level, on_ac = monitors.battery()
+        if on_ac is None or raw.ac is None or on_ac == raw.ac:
+            return False
+        raw.batt, raw.ac = level, on_ac          # refresh() sees the change and raises the power alert
+        self.quiet_brightness(now)
+        self.refresh(now)
+        return True
+
+    def quiet_brightness(self, now):
+        self.power_quiet_until = now + 4.0
+        if self.hud and self.hud[0] == "brightness":
+            self.hud = None                      # a bar that slipped in just before
 
     def sleep_display(self):
         self.close_menu()
@@ -1385,6 +1483,7 @@ class Island:
         w, h = self.size
         on_island = self.on_island = -w / 2 - 3 <= x <= w / 2 + self.ext + 3 and -h - 4 <= y <= 2
         self.pointer = (x, y)
+        self.tour.tick(now)
         file_drag = self.watch_file_drag(now, x, y)
         if self.shelf_done:
             self.shelf_finished()
@@ -1482,8 +1581,10 @@ class Island:
                 self.toast("Microphone in use" if mon.mic else "Microphone off",
                            "An app is listening" if mon.mic else "No app is using it",
                            ORANGE if mon.mic else GRAY, 2.5)
-            elif p_ac is not None and mon.ac != p_ac and S["power"]:
-                self.toast("Charging" if mon.ac else "On battery", "%d%% charged" % mon.batt, YELLOW)
+            elif p_ac is not None and mon.ac != p_ac:
+                self.quiet_brightness(now)      # the brightness is about to change by itself; not news
+                if S["power"]:
+                    self.toast("Charging" if mon.ac else "On battery", "%d%% charged" % mon.batt, YELLOW)
             elif track and track != p_track:
                 self.toast(track[0], track[1] or music["app"], PINK)
         self.prev = snap
@@ -1557,10 +1658,13 @@ class Island:
 
         # Expanded: middle column.
         pointed = self.hovered_item() if self.menu_open else None
-        hud_on = bool(self.hud and now < self.hud[1]) and pointed is None and not self.drag_over
+        hud_on = bool(self.hud and now < self.hud[1]) and pointed is None and not self.drag_over \
+            and not self.tour.active
         hud_level = 0.0
         self.draw_shelf()
-        if self.drag_over:
+        if self.tour.active:                    # the tour's captions take over the island
+            title, sub = self.tour.text()
+        elif self.drag_over:
             count = len(S["shelf"])
             title, sub = "Drop to move to the Shelf", "%d item%s there now" % (count, "" if count == 1 else "s")
         elif self.shelf_hover == "clear":
@@ -1613,6 +1717,8 @@ class Island:
                 sub = "\u2009·\u2009".join("%s %d%%" % (name, round(v * 100)) for name, v in stats if v is not None)
             else:
                 sub = "All quiet"
+        if self.tour.active:
+            music = None                    # the tour's captions get the whole middle column
         controls = bool(music and music.get("control"))
         media = bool(music)                 # media layout: both rows move up, progress bar underneath
         if media != self.media_layout:

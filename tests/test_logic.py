@@ -509,6 +509,189 @@ class ShelfTests(unittest.TestCase):
         self.assertEqual(shelf._free_name(self.home, "new.txt"), os.path.join(self.home, "new.txt"))
 
 
+class ButtonPictureTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        self.folder = Stub(custom_buttons, "PICTURES", os.path.join(os.path.realpath(self.root.name), "Icons"))
+        self.folder.__enter__()
+        self.icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icon.png")
+
+    def tearDown(self):
+        self.folder.__exit__()
+        self.root.cleanup()
+
+    def test_an_image_file_becomes_a_square_png(self):
+        path = custom_buttons.save_picture(self.icon)
+        self.assertTrue(path.startswith(custom_buttons.PICTURES) and path.endswith(".png"))
+        with open(path, "rb") as f:
+            header = f.read(24)
+        self.assertEqual(header[:8], b"\x89PNG\r\n\x1a\n")
+        width, height = int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+        self.assertEqual((width, height), (custom_buttons.PICTURE_SIZE, custom_buttons.PICTURE_SIZE))
+
+    def test_an_app_gives_its_icon(self):
+        self.assertIsNotNone(custom_buttons.save_picture("/System/Applications/Calculator.app"))
+
+    def test_things_that_are_not_pictures_are_refused(self):
+        self.assertIsNone(custom_buttons.save_picture("/etc/hosts"))
+        self.assertIsNone(custom_buttons.save_picture("/no/such/file.png"))
+        self.assertIsNone(custom_buttons.save_picture(""))
+
+    def test_picture_of_ignores_a_picture_that_has_gone(self):
+        path = custom_buttons.save_picture(self.icon)
+        self.assertEqual(custom_buttons.picture_of({"image": path}), path)
+        os.remove(path)
+        self.assertIsNone(custom_buttons.picture_of({"image": path}))
+        self.assertIsNone(custom_buttons.picture_of({"icon": "star.fill"}))
+
+    def test_unused_pictures_are_tidied_away(self):
+        used = custom_buttons.save_picture(self.icon)
+        unused = custom_buttons.save_picture(self.icon)
+        other = os.path.join(custom_buttons.PICTURES, "notes.txt")          # not ours: left alone
+        open(other, "w").close()
+        custom_buttons.tidy_pictures([{"image": used}, {"icon": "globe"}])
+        self.assertTrue(os.path.exists(used))
+        self.assertFalse(os.path.exists(unused))
+        self.assertTrue(os.path.exists(other))
+
+    def test_a_custom_button_carries_its_picture_into_the_ring(self):
+        self.assertEqual(menu.entry("k", "star.fill", "L", lambda: "", image="/x.png").image, "/x.png")
+        self.assertIsNone(menu.entry("k", "star.fill", "L", lambda: "").image)
+
+
+class ShortcutTests(unittest.TestCase):
+    def test_names_are_read_one_per_line_including_non_ascii(self):
+        with Stub(custom_buttons.subprocess, "run", fake_run("Morning\n今天天气怎么样\n\n  Spaced  \n")):
+            self.assertEqual(custom_buttons.shortcut_names(), ["Morning", "今天天气怎么样", "Spaced"])
+
+    def test_no_tool_means_no_names(self):
+        def missing(*a, **k):
+            raise FileNotFoundError("shortcuts")
+        with Stub(custom_buttons.subprocess, "run", missing):
+            self.assertEqual(custom_buttons.shortcut_names(), [])
+
+    def test_running_a_shortcut_passes_its_name_untouched(self):
+        calls = []
+        with Stub(custom_buttons.subprocess, "Popen", lambda args, **k: calls.append(args)):
+            custom_buttons.run({"kind": "shortcut", "target": "嘿; rm -rf ~"})
+        self.assertEqual(calls, [[custom_buttons.SHORTCUTS_TOOL, "run", "嘿; rm -rf ~"]])     # one argument, no shell
+
+    def test_description(self):
+        self.assertEqual(custom_buttons.describe({"kind": "shortcut", "target": "Morning"}),
+                         "Run Shortcut  ·  Morning")
+
+
+class TourTests(unittest.TestCase):
+    def island(self, **state):
+        """Just enough of an island for the tour's bookkeeping."""
+        calls = []
+        base = dict(locked=False, screen_ok=True, on_island=False, menu_open=False, menu_page="main",
+                    peek_until=0.0, menu_seen=0.0, settings={"shelf": []}, calls=calls,
+                    outer=SimpleNamespace(visible=False),
+                    pulse=lambda color: None, refresh_tour_controls=lambda: None,
+                    close_outer=lambda: None, set_page=lambda page: None)
+        base.update(state)
+        island = SimpleNamespace(**base)
+        island.open_menu = lambda: (calls.append("open"), setattr(island, "menu_open", True))
+        island.close_menu = lambda: (calls.append("close"), setattr(island, "menu_open", False))
+        return island
+
+    def run_until_moved(self, guide, now=0.0):
+        """Tick until the tour leaves the stop it is on (or a second of its time passes)."""
+        import tour
+        start = guide.index
+        for step in range(40):
+            guide.tick(now + step * 0.05)
+            if guide.index != start or not guide.active:
+                return True
+        return False
+
+    def test_captions_are_short_enough_for_the_island(self):
+        import tour
+        steps = tour.Tour(self.island()).steps()
+        self.assertGreaterEqual(len(steps), 8)
+        for step in steps:
+            self.assertLessEqual(len(step.title), 24, step.title)
+            self.assertLessEqual(len(step.subtitle), 30, step.subtitle)
+
+    def test_next_shows_only_where_nothing_has_to_be_done(self):
+        import tour
+        for step in tour.Tour(self.island()).steps():
+            if step.done is None:
+                self.assertTrue(step.next_button, step.title)
+        required = [s.title for s in tour.Tour(self.island()).steps() if s.done is not None and not s.next_button]
+        self.assertIn("Click the island", required)
+        self.assertIn("Click a category", required)
+
+    def test_a_stop_waits_for_the_user_and_then_moves_on(self):
+        import tour
+        island = self.island()
+        guide = tour.Tour(island)
+        guide.start()
+        self.assertEqual(guide.text()[0], "Welcome")
+        self.assertTrue(guide.shows_next())
+        guide.advance()                                             # the user presses Next
+        self.assertEqual(guide.text()[0], "Point at the island")
+        self.assertFalse(guide.shows_next())                        # something has to be done here
+        self.assertFalse(self.run_until_moved(guide))               # and until it is, the tour stays put
+        island.on_island = True
+        self.assertTrue(self.run_until_moved(guide, 10.0))
+        self.assertEqual(guide.text()[0], "Click the island")
+
+    def test_rings_are_kept_open_where_a_stop_needs_them(self):
+        import tour
+        island = self.island(on_island=True)
+        guide = tour.Tour(island)
+        guide.start()
+        guide.index = 2                                             # at "Click the island"...
+        island.menu_open = True                                     # ...and the user clicks it
+        self.assertTrue(self.run_until_moved(guide))
+        self.assertEqual(guide.text()[0], "Click a category")
+        island.menu_open = False                                    # a stray click folded them
+        guide.tick(100.0)
+        self.assertTrue(island.menu_open)
+
+    def test_the_drag_it_out_stop_is_left_out_if_nothing_was_added(self):
+        import tour
+        island = self.island()
+        guide = tour.Tour(island)
+        guide.start()
+        titles = []
+        while guide.active:
+            titles.append(guide.text()[0])
+            guide.advance()                                         # Next all the way through
+        self.assertNotIn("Drag it out again", titles)
+        self.assertEqual(titles[-1], "That's the tour")
+
+        island = self.island()
+        guide = tour.Tour(island)
+        guide.start()
+        while guide.text()[0] != "Drag a file onto me":
+            guide.advance()
+        island.settings["shelf"].append("/a/file")                  # the user drops one
+        guide.advance()
+        self.assertEqual(guide.text()[0], "Drag it out again")
+
+    def test_buttons_do_nothing_real_during_the_tour(self):
+        import tour
+        guide = tour.Tour(self.island())
+        self.assertTrue(guide.allows(SimpleNamespace(children=[1], key="category:0")))
+        self.assertTrue(guide.allows(SimpleNamespace(children=None, key="settings")))
+        self.assertFalse(guide.allows(SimpleNamespace(children=None, key="lock")))
+
+    def test_it_waits_while_the_screen_is_locked(self):
+        import tour
+        island = self.island(locked=True)
+        guide = tour.Tour(island)
+        guide.start()
+        self.assertTrue(guide.pending)
+        self.assertFalse(guide.active)
+        island.locked = False
+        guide.tick(0.0)
+        self.assertTrue(guide.active)
+        self.assertFalse(guide.pending)
+
+
 class SmallThingsTests(unittest.TestCase):
     def test_background_dimming_cycles(self):
         levels = [value for value, _ in backgrounds.DIM_CHOICES]

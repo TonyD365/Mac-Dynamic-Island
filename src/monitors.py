@@ -363,7 +363,7 @@ class Monitors:
 
     def start(self):
         self._spawn(self._devices, 1.0)
-        self._spawn(self._power, 4.0)
+        self._spawn(self._power, 2.0)
         self._spawn(self._music, 1.5)
         self._spawn(self._levels, 0.12)
         self._spawn(self._bluetooth, 1.0)    # frequent: a device can drop and rejoin within a couple of seconds

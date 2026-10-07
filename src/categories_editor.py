@@ -139,8 +139,8 @@ class Editor:
             else:
                 look = {"icon": _symbol("eye.slash"), "name": "Not shown", "count": str(len(menu.unused(self.values)))}
             return look[column]
-        symbol, label = menu.describe_id(self.values, self.items_of(self.selected)[row])
-        return _symbol(symbol) if column == "icon" else label
+        item = self.items_of(self.selected)[row]
+        return menu.list_image(self.values, item) if column == "icon" else menu.describe_id(self.values, item)[1]
 
     # ---- changes ----
 

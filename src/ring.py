@@ -108,7 +108,10 @@ class Ring:
             b.setBackgroundColor_(fill.CGColor())
             b.setBorderColor_((WHITE if (hovered or selected) else FAINT).CGColor())
             b.setBorderWidth_(1.5 if selected else 1.0)
-            self.island.set_symbol(icon, item.symbol, BLACK if active else WHITE, 14.0)
+            if getattr(item, "image", None):
+                self.island.set_picture(icon, item.image)
+            else:
+                self.island.set_symbol(icon, item.symbol, BLACK if active else WHITE, 14.0)
 
     # ---- hit-testing ----
 

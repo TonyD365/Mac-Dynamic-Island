@@ -1,11 +1,14 @@
 """User-defined action buttons, and the small window for editing them."""
 import os
 import subprocess
+import uuid
 
 from AppKit import (
-    NSApp, NSBackingStoreBuffered, NSBeep, NSBezelBorder, NSButton, NSColor, NSFont, NSImage, NSImageCell,
-    NSMakeRect, NSObject, NSOpenPanel, NSPopUpButton, NSScrollView, NSTableColumn, NSTableView,
+    NSApp, NSBackingStoreBuffered, NSBeep, NSBezelBorder, NSBitmapImageRep, NSButton, NSCalibratedRGBColorSpace,
+    NSColor, NSCompositingOperationSourceOver, NSFont, NSGraphicsContext, NSImage, NSImageCell, NSMakeRect,
+    NSMenu, NSMenuItem, NSObject, NSOpenPanel, NSPopUpButton, NSScrollView, NSTableColumn, NSTableView,
     NSTextAlignmentRight, NSTextField, NSURL, NSWindow, NSWindowStyleMaskClosable, NSWindowStyleMaskTitled,
+    NSWorkspace,
 )
 
 import settings
@@ -16,14 +19,92 @@ KINDS = (
     ("file", "Open File or Folder", "Any file or folder — press Choose…", True),
     ("url", "Open Website", "A web address, e.g. github.com", False),
     ("shell", "Run Shell Command", "A command line, run with your shell", False),
+    ("shortcut", "Run Shortcut", "The name of a shortcut from the Shortcuts app — press Choose…", True),
 )
+SHORTCUTS_TOOL = "/usr/bin/shortcuts"
 ICONS = (
     ("star.fill", "Star"), ("app.fill", "App"), ("folder.fill", "Folder"), ("doc.fill", "Document"),
     ("globe", "Globe"), ("terminal.fill", "Terminal"), ("bolt.fill", "Bolt"), ("heart.fill", "Heart"),
     ("paperplane.fill", "Paper Plane"), ("envelope.fill", "Mail"), ("message.fill", "Message"),
     ("music.note", "Music"), ("gamecontroller.fill", "Game"), ("book.fill", "Book"), ("cart.fill", "Cart"),
-    ("hammer.fill", "Tools"),
+    ("hammer.fill", "Tools"), ("wand.and.stars", "Shortcut"),
 )
+
+
+# A button can show a picture instead of a symbol: an app's icon or any image file. The picture is
+# copied (as a small PNG) into this folder, so the button keeps it even if the original goes away.
+PICTURES = os.path.expanduser("~/Library/Application Support/DynamicIsland/Icons")
+PICTURE_SIZE = 128
+IMAGE_TYPES = ["png", "jpg", "jpeg", "heic", "tiff", "tif", "gif", "bmp", "webp", "icns", "pdf", "svg"]
+
+
+def load_picture(source):
+    """The picture a file stands for: an app's icon, or the image itself. None if it can't be read."""
+    if not source or not os.path.exists(source):
+        return None
+    if source.rstrip("/").endswith(".app"):
+        # The real bundle, not a link to it: a link's icon carries an alias arrow.
+        return NSWorkspace.sharedWorkspace().iconForFile_(os.path.realpath(source))
+    image = NSImage.alloc().initWithContentsOfFile_(source)
+    return image if (image is not None and image.isValid()) else None
+
+
+def save_picture(source):
+    """Copy the picture for `source` into the Icons folder as a square PNG. Returns its path, or None."""
+    image = load_picture(source)
+    if image is None:
+        return None
+    size = image.size()
+    if size.width <= 0 or size.height <= 0:
+        return None
+    side = PICTURE_SIZE
+    rep = NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+        None, side, side, 8, 4, True, False, NSCalibratedRGBColorSpace, 0, 0)
+    # Fill the square: scale so the shorter side fits, and centre the rest out of view.
+    scale = max(side / size.width, side / size.height)
+    width, height = size.width * scale, size.height * scale
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.setCurrentContext_(NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep))
+    image.drawInRect_fromRect_operation_fraction_(
+        NSMakeRect((side - width) / 2, (side - height) / 2, width, height), NSMakeRect(0, 0, 0, 0),
+        NSCompositingOperationSourceOver, 1.0)
+    NSGraphicsContext.restoreGraphicsState()
+    data = rep.representationUsingType_properties_(4, None)        # 4 = PNG
+    if data is None:
+        return None
+    os.makedirs(PICTURES, exist_ok=True)
+    path = os.path.join(PICTURES, uuid.uuid4().hex[:12] + ".png")
+    return path if data.writeToFile_atomically_(path, True) else None
+
+
+def picture_of(button):
+    """Path of the button's picture if it has one that still exists, else None."""
+    path = button.get("image")
+    return path if (path and os.path.exists(path)) else None
+
+
+def button_image(button):
+    """What to show for a button in lists: its picture, or its symbol."""
+    path = picture_of(button)
+    if path:
+        return NSImage.alloc().initWithContentsOfFile_(path)
+    return NSImage.imageWithSystemSymbolName_accessibilityDescription_(button.get("icon", "star.fill"), None)
+
+
+def tidy_pictures(buttons, keep=()):
+    """Remove pictures in the Icons folder that no button uses any more."""
+    used = {b.get("image") for b in buttons} | set(keep)
+    try:
+        names = os.listdir(PICTURES)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(PICTURES, name)
+        if name.endswith(".png") and path not in used:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def run(button):
@@ -37,6 +118,18 @@ def run(button):
         subprocess.Popen(["open", target if "://" in target else "https://" + target])
     elif kind == "shell":
         subprocess.Popen(target, shell=True, cwd=os.path.expanduser("~"))
+    elif kind == "shortcut":
+        subprocess.Popen([SHORTCUTS_TOOL, "run", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def shortcut_names():
+    """The user's shortcuts, as the Shortcuts app lists them. Empty if the tool is missing or fails."""
+    try:
+        out = subprocess.run([SHORTCUTS_TOOL, "list"], capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
 
 def describe(button):
@@ -64,7 +157,7 @@ class _Table(NSObject):
         button = self.editor.values["custom_buttons"][row]
         key = column.identifier()
         if key == "icon":
-            return NSImage.imageWithSystemSymbolName_accessibilityDescription_(button.get("icon", "star.fill"), None)
+            return button_image(button)
         if key == "name":
             return button.get("name", "Untitled")
         return describe(button)
@@ -81,6 +174,8 @@ class Editor:
         self.on_change = None       # called after every change
         self.window = None
         self.editing = None         # index being edited in the sheet, or None for a new button
+        self.form_picture = None    # picture chosen in the sheet (a path in the Icons folder), or None
+        self.form_symbol = 0        # the symbol selected before a picture was chosen
         self._targets = []          # controls don't retain their targets
 
     def bind(self, callback):
@@ -165,6 +260,7 @@ class Editor:
             self.changed()
 
     def changed(self):
+        tidy_pictures(self.values["custom_buttons"])
         settings.save(self.values)
         self.table.reloadData()
         self.selection_changed()
@@ -201,10 +297,17 @@ class Editor:
         label("Name", 196)
         self.name = field(196, 338)
         label("Icon", 158)
-        self.icon = popup(158)
+        # The symbols, then: the chosen picture (hidden until there is one) and the two ways to choose one.
+        self.icon = popup(158, self.icon_changed)
         for symbol, title in ICONS:
             self.icon.menu().addItemWithTitle_action_keyEquivalent_(title, None, "")
             self.icon.lastItem().setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, None))
+        self.icon.menu().addItem_(NSMenuItem.separatorItem())
+        self.icon.menu().addItemWithTitle_action_keyEquivalent_("Picture", None, "")
+        self.picture_item = self.icon.lastItem()
+        self.icon.menu().addItemWithTitle_action_keyEquivalent_("Use an App's Icon…", None, "")
+        self.icon.menu().addItemWithTitle_action_keyEquivalent_("Use an Image File…", None, "")
+        self.picture_index = len(ICONS) + 1         # after the separator
         label("Action", 120)
         self.kind = popup(120, self.kind_changed)
         for _, title, _, _ in KINDS:
@@ -229,7 +332,8 @@ class Editor:
         b = buttons[index] if index is not None else {"name": "", "icon": ICONS[0][0], "kind": "app", "target": ""}
         self.name.setStringValue_(b.get("name", ""))
         symbols = [s for s, _ in ICONS]
-        self.icon.selectItemAtIndex_(symbols.index(b["icon"]) if b.get("icon") in symbols else 0)
+        self.form_symbol = symbols.index(b["icon"]) if b.get("icon") in symbols else 0
+        self.show_picture(picture_of(b))
         kinds = [k for k, _, _, _ in KINDS]
         self.kind.selectItemAtIndex_(kinds.index(b["kind"]) if b.get("kind") in kinds else 0)
         self.target.setStringValue_(b.get("target", ""))
@@ -239,14 +343,79 @@ class Editor:
 
     def close_form(self):
         self.window.endSheet_(self.sheet)
+        tidy_pictures(self.values["custom_buttons"])        # a picture picked and then not saved
+
+    def show_picture(self, path):
+        """Put the icon pop-up in step with the form: the chosen picture if there is one, else the symbol."""
+        self.form_picture = path
+        self.picture_item.setHidden_(path is None)
+        if path is None:
+            self.icon.selectItemAtIndex_(self.form_symbol)
+            return
+        thumb = NSImage.alloc().initWithContentsOfFile_(path)
+        if thumb is not None:
+            thumb.setSize_((16, 16))
+        self.picture_item.setImage_(thumb)
+        self.icon.selectItemAtIndex_(self.picture_index)
+
+    def icon_changed(self):
+        index = self.icon.indexOfSelectedItem()
+        if index < len(ICONS):                      # a symbol
+            self.form_symbol = index
+            self.show_picture(None)
+        elif index == self.picture_index:           # the picture already chosen
+            return
+        else:
+            self.choose_picture(apps=index == self.picture_index + 1)
+
+    def choose_picture(self, apps):
+        panel = NSOpenPanel.openPanel()
+        if apps:
+            panel.setDirectoryURL_(NSURL.fileURLWithPath_("/Applications"))
+            panel.setAllowedFileTypes_(["app"])
+            panel.setMessage_("Choose the app whose icon the button should show")
+        else:
+            panel.setAllowedFileTypes_(IMAGE_TYPES)
+            panel.setMessage_("Choose a picture for the button")
+        stored = None
+        if panel.runModal() == 1 and panel.URL() is not None:
+            stored = save_picture(panel.URL().path())
+            if stored is None:
+                NSBeep()                            # not something that can be shown as a picture
+        self.show_picture(stored or self.form_picture)      # cancelled or unreadable: leave things as they were
 
     def kind_changed(self):
         _, _, hint, can_choose = KINDS[self.kind.indexOfSelectedItem()]
         self.hint.setStringValue_(hint)
         self.choose.setEnabled_(can_choose)
 
+    def choose_shortcut(self):
+        """Pop up the list of the user's shortcuts under the Choose button."""
+        names = shortcut_names()
+        if not names:
+            NSBeep()
+            self.hint.setStringValue_("No shortcuts found — make one in the Shortcuts app first")
+            return
+        pick = NSMenu.alloc().init()
+        for name in names:
+            item = pick.addItemWithTitle_action_keyEquivalent_(name, "fire:", "")
+            item.setTarget_(self.bind(lambda name=name: self.shortcut_chosen(name)))
+        pick.popUpMenuPositioningItem_atLocation_inView_(None, (0, self.choose.frame().size.height), self.choose)
+
+    def shortcut_chosen(self, name):
+        self.target.setStringValue_(name)
+        if not self.name.stringValue().strip():
+            self.name.setStringValue_(name)
+        symbols = [s for s, _ in ICONS]
+        if self.form_picture is None and self.form_symbol == 0:     # still the default star: suggest the wand
+            self.form_symbol = symbols.index("wand.and.stars")
+            self.show_picture(None)
+
     def choose_path(self):
         kind = KINDS[self.kind.indexOfSelectedItem()][0]
+        if kind == "shortcut":
+            self.choose_shortcut()
+            return
         panel = NSOpenPanel.openPanel()
         if kind == "app":
             panel.setDirectoryURL_(NSURL.fileURLWithPath_("/Applications"))
@@ -266,12 +435,16 @@ class Editor:
         if not name or not target:
             NSBeep()
             return
-        entry = {"name": name, "icon": ICONS[self.icon.indexOfSelectedItem()][0],
+        entry = {"name": name, "icon": ICONS[self.form_symbol][0],
                  "kind": KINDS[self.kind.indexOfSelectedItem()][0], "target": target}
+        if self.form_picture:
+            entry["image"] = self.form_picture
         buttons = self.values["custom_buttons"]
         if self.editing is None:
             buttons.append(entry)
         else:
+            if buttons[self.editing].get("id"):         # the same button, so it keeps its place in the ring
+                entry["id"] = buttons[self.editing]["id"]
             buttons[self.editing] = entry
         self.close_form()
         self.changed()

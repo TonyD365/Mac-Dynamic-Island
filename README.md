@@ -36,7 +36,9 @@ Click it for a ring of action buttons.
 - Time: Focus, Timer, Stopwatch · Media: Previous, Play / Pause, Next, Mute ·
   System: Dark Mode, Keep Awake, Lock Screen, Sleep Display · Tools: Screenshot, Color Picker, Calculator ·
   Files: Downloads, Desktop, Documents, Applications · Apps: Activity Monitor, System Settings, Terminal
-- Your own **custom buttons**: open an app, a file or folder, a website, or run a shell command
+- Your own **custom buttons**: open an app, a file or folder, a website, run a shell command, or run
+  a shortcut from the Shortcuts app.
+  Each can show a symbol, an app's icon, or any picture you choose
 - **Categories** are yours to arrange: add, rename and remove them, and drag buttons between them
 - Scroll on the island itself to change the volume
 
@@ -67,6 +69,8 @@ Click it for a ring of action buttons.
 - Background pictures for the expanded island: built-in macOS landscapes or your own image
 - Launch at login
 - Updates itself from this repository's releases
+- A hands-on tour the first time it runs: it asks you to try each thing and moves on when you
+  have. Replay it from Settings → General
 - Works on Macs with and without a notch, on Apple silicon and Intel
 
 ## Install
@@ -172,6 +176,7 @@ src/                 the app
   focus_editor.py      the Focus Modes window
   custom_buttons.py    custom buttons and their window
   about.py             the About window
+  tour.py              the guided tour
   categories_editor.py the Categories window
   calendar_events.py   next calendar event
   shelf.py             files parked on the island
