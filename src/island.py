@@ -20,6 +20,7 @@ from Quartz import (
     kCALayerMaxXMinYCorner, kCALayerMinXMinYCorner,
 )
 
+import about
 import actions
 import autostart
 import backgrounds
@@ -53,9 +54,10 @@ GLOW_PAD = 40.0       # transparent margin around the island for the glow
 MENU_R = ring.RADIUS  # radius of the round buttons that fan out around the island
 MENU_GAP = 10.0       # space between the island and the inner ring of buttons
 RING_GAP = 8.0        # space between the inner and the outer ring
-SHELF_W = 104.0       # the drawer that slides out on the right while the Shelf holds files
+SHELF_W = 150.0       # the drawer that slides out on the right while the Shelf holds files
 SHELF_EAR = 20.0      # extra width beside the notch for the folder mark, when compact
-SHELF_SLOTS = 3       # file icons shown in the drawer
+SHELF_ROWS = 3        # files listed in the drawer at once; scroll for the rest
+SHELF_ROW_H = 19.0
 INNER_SLOTS = 8       # buttons visible at once in each ring; more are reached by turning it
 OUTER_SLOTS = 9
 
@@ -147,6 +149,7 @@ class Island:
         self.focus_editor.values = self.settings
         self.focus_dropdown = None    # built once the island's window exists
         self.last_block_toast = 0.0
+        self.about_window = about.About(self.check_for_updates)
         self.timer_end = None         # when the countdown timer finishes
         self.stopwatch_start = None   # when the stopwatch was started
         self.drag_over = False        # files are being dragged over the island
@@ -155,7 +158,8 @@ class Island:
         self.shape_key = None         # (mode, extension) the island is drawn in
         self.shelf_press = None       # (path, point) of a shelf icon being pressed
         self.dragging_out = False     # a shelf file is being dragged out
-        self.shelf_hover = None       # shelf icon index, or "clear", under the pointer
+        self.shelf_hover = None       # index of the listed file, or "clear", under the pointer
+        self.shelf_offset = 0         # how far the list in the drawer is scrolled
         self._icons = {}              # file icons by path
         self.event_alerts = set()     # (event id, kind) already announced
         self.seeking = None           # fraction 0..1 while the progress bar is being dragged
@@ -458,22 +462,33 @@ class Island:
         rule.setCornerRadius_(0.5)
         rule.setBackgroundColor_(FAINT.CGColor())
         self.drawer.addSublayer_(rule)
-        self.drawer_title = self.text_layer(self.drawer, dx + 12, mid, 56, 8.5, GRAY, "left", NSFontWeightBold)
-        self.set_text(self.drawer_title, "SHELF")
-        self.clear_pos = (dx + SHELF_W - 15, mid)
+        # A thin header (title, count, clear) and below it the list: icon and name on each row.
+        head = -8.5
+        self.drawer_title = self.text_layer(self.drawer, dx + 12, head, SHELF_W - 40, 8.5, GRAY, "left",
+                                            NSFontWeightBold)
+        self.clear_pos = (dx + SHELF_W - 14, head)
         self.clear_mark = self.symbol_layer(self.drawer, *self.clear_pos)
         self.set_symbol(self.clear_mark, "xmark", GRAY, 8.5)
-        self.shelf_pos = [(dx + 24 + i * 29, -self.nh - 22) for i in range(SHELF_SLOTS)]
-        self.shelf_tiles = []
+        first = -16.0 - SHELF_ROW_H / 2                 # centre of the first row
+        self.shelf_pos = [(dx + 18, first - i * SHELF_ROW_H) for i in range(SHELF_ROWS)]    # icon centres
+        self.shelf_rows = []
         for x, y in self.shelf_pos:
-            tile = CALayer.layer()
-            tile.setBounds_(NSMakeRect(0, 0, 26, 26))
-            tile.setPosition_((x, y))
-            tile.setContentsGravity_("resizeAspect")
-            tile.setContentsScale_(self.scale)
-            self.drawer.addSublayer_(tile)
-            self.shelf_tiles.append(tile)
-        self.drawer_note = self.text_layer(self.drawer, dx + 8, -self.nh - 22, SHELF_W - 14, 10, GRAY, "center")
+            back = CALayer.layer()                      # highlight under the pointer
+            back.setFrame_(NSMakeRect(dx + 6, y - SHELF_ROW_H / 2 + 1, SHELF_W - 12, SHELF_ROW_H - 2))
+            back.setCornerRadius_(5)
+            back.setBackgroundColor_(NSColor.colorWithWhite_alpha_(1.0, 0.14).CGColor())
+            back.setOpacity_(0)
+            self.drawer.addSublayer_(back)
+            icon = CALayer.layer()
+            icon.setBounds_(NSMakeRect(0, 0, 16, 16))
+            icon.setPosition_((x, y))
+            icon.setContentsGravity_("resizeAspect")
+            icon.setContentsScale_(self.scale)
+            self.drawer.addSublayer_(icon)
+            name = self.text_layer(self.drawer, x + 12, y, SHELF_W - 40, 10.5, WHITE, "left")
+            name.setTruncationMode_("middle")           # keeps the file extension in view
+            self.shelf_rows.append((back, icon, name))
+        self.drawer_note = self.text_layer(self.drawer, dx + 8, -self.exp_h / 2 - 4, SHELF_W - 14, 10.5, GRAY, "center")
         self.shelf_shown = None
         _no_anim(lambda: self.drawer.setOpacity_(0))
 
@@ -834,6 +849,10 @@ class Island:
             return self.outer
         return self.inner
 
+    def show_about(self):
+        self.close_menu()
+        self.about_window.show()
+
     def edit_categories(self):
         self.close_menu()
         self.categories_editor.show()
@@ -922,22 +941,32 @@ class Island:
             settings.save(self.settings)
         self.refresh(time.time())
 
+    def over_drawer(self, x, y):
+        return (self.mode == "expanded" and self.ext >= SHELF_W
+                and self.exp_w / 2 <= x <= self.exp_w / 2 + self.ext and -self.exp_h <= y <= 0)
+
     def shelf_at(self, x, y):
         """What part of the drawer is at this point: a file's index, "clear", or None."""
-        if self.mode != "expanded" or self.ext < SHELF_W or not self.settings["shelf"]:
+        paths = self.settings["shelf"]
+        if not paths or not self.over_drawer(x, y):
             return None
         cx, cy = self.clear_pos
-        if abs(x - cx) <= 10 and abs(y - cy) <= 10:
+        if abs(x - cx) <= 10 and abs(y - cy) <= 8:
             return "clear"
-        for i, (tx, ty) in enumerate(self.shelf_pos[:self.shelf_icons()]):
-            if abs(x - tx) <= 14 and abs(y - ty) <= 15:
-                return i
+        for row, (_, ty) in enumerate(self.shelf_pos):
+            index = self.shelf_offset + row
+            if index < len(paths) and abs(y - ty) <= SHELF_ROW_H / 2:
+                return index
         return None
 
-    def shelf_icons(self):
-        """How many file icons the drawer shows: all of them if they fit, else one slot becomes "+N"."""
-        count = len(self.settings["shelf"])
-        return count if count <= SHELF_SLOTS else SHELF_SLOTS - 1
+    def scroll_shelf(self, step):
+        """Scroll the list in the drawer by one file. Returns False if there is nowhere to go."""
+        last = max(0, len(self.settings["shelf"]) - SHELF_ROWS)
+        target = max(0, min(last, self.shelf_offset + step))
+        if target == self.shelf_offset:
+            return False
+        self.shelf_offset = target
+        return True
 
     def file_icon(self, path):
         if path not in self._icons:
@@ -947,16 +976,18 @@ class Island:
     def draw_shelf(self):
         """Bring the drawer and the folder mark up to date with what is on the Shelf."""
         paths = self.settings["shelf"]
-        key = (tuple(paths), self.drag_over)
+        self.shelf_offset = max(0, min(self.shelf_offset, len(paths) - SHELF_ROWS))    # files may have left
+        key = (tuple(paths), self.drag_over, self.shelf_offset, self.shelf_hover)
         if key == self.shelf_shown:
             return
         self.shelf_shown = key
-        icons = self.shelf_icons()
-        more = len(paths) - icons
+        hovered = self.shelf_hover if isinstance(self.shelf_hover, int) else None
 
         def apply():
-            for i, tile in enumerate(self.shelf_tiles):
-                tile.setContents_(self.file_icon(paths[i]) if i < icons else None)
+            for row, (back, icon, _) in enumerate(self.shelf_rows):
+                index = self.shelf_offset + row
+                icon.setContents_(self.file_icon(paths[index]) if index < len(paths) else None)
+                back.setOpacity_(1 if index == hovered else 0)
             self.clear_mark.setOpacity_(1 if paths else 0)
             self.shelf_mark.setOpacity_(1 if paths else 0)
             # Clock-side stays put; battery, music bars and countdown slide right to clear the folder mark.
@@ -966,13 +997,16 @@ class Island:
             f = self.ear_frame
             self.ear_text.setFrame_(NSMakeRect(f.origin.x + shift, f.origin.y, f.size.width, f.size.height))
         _no_anim(apply)
-        if more > 0:
-            note, x = "+%d" % more, self.shelf_pos[-1][0] - (SHELF_W - 14) / 2
+        for row, (_, _, name) in enumerate(self.shelf_rows):
+            index = self.shelf_offset + row
+            shown = (os.path.basename(paths[index].rstrip("/")) or paths[index]) if index < len(paths) else ""
+            self.set_text(name, shown)
+        if len(paths) > SHELF_ROWS:         # say where in the list we are, since not all of it shows
+            last = self.shelf_offset + SHELF_ROWS
+            self.set_text(self.drawer_title, "SHELF  ·  %d–%d OF %d" % (self.shelf_offset + 1, last, len(paths)))
         else:
-            note, x = ("" if paths else "Drop here"), self.exp_w / 2 + 8
-        f = self.drawer_note.frame()
-        _no_anim(lambda: self.drawer_note.setFrame_(NSMakeRect(x, f.origin.y, f.size.width, f.size.height)))
-        self.set_text(self.drawer_note, note)
+            self.set_text(self.drawer_title, "SHELF")
+        self.set_text(self.drawer_note, "" if paths else "Drop files here")
 
     # ---- calendar ----
 
@@ -1029,6 +1063,16 @@ class Island:
     def on_scroll(self, delta, precise):
         """Scrolling on the island itself changes the volume; around it, it turns the open button ring."""
         if not delta:
+            return
+        if self.over_drawer(*self.pointer):     # the list in the Shelf drawer
+            notch = 12.0 if precise else 1.0
+            self.scroll_acc = max(-notch, min(notch, self.scroll_acc + delta))
+            now = time.time()
+            if abs(self.scroll_acc) >= notch and now - self.last_rotate >= 0.08:
+                self.last_rotate = now
+                if self.scroll_shelf(1 if self.scroll_acc < 0 else -1):
+                    self.refresh(now)
+                self.scroll_acc = 0.0
             return
         if self.menu_open and not self.on_island:
             notch = 12.0 if precise else 1.0
@@ -1103,8 +1147,9 @@ class Island:
             x, y = point.x - self.win_w / 2, point.y - self.win_h
             if math.hypot(x - px, y - py) > 4:              # moved far enough to mean a drag
                 self.dragging_out = True
-                tx, ty = self.shelf_pos[min(index, SHELF_SLOTS - 1)]
-                frame = NSMakeRect(self.win_w / 2 + tx - 13, self.win_h + ty - 13, 26, 26)
+                row = max(0, min(SHELF_ROWS - 1, index - self.shelf_offset))
+                tx, ty = self.shelf_pos[row]
+                frame = NSMakeRect(self.win_w / 2 + tx - 12, self.win_h + ty - 12, 24, 24)
                 self.view.start_file_drag(path, event, self.file_icon(path), frame)
 
     def on_release(self, point):

@@ -8,6 +8,7 @@ import copy
 import uuid
 from types import SimpleNamespace
 
+import about
 import autostart
 import backgrounds
 import custom_buttons
@@ -275,5 +276,7 @@ def settings_entries(island):
             entry("set:focus", "list.bullet", "Focus Modes",
                   lambda: "%d modes  ·  click to edit" % len(S["focus_modes"]), island.edit_focus_modes),
         ]),
+        entry("about", "info", "About Dynamic Island", lambda: about.version_text() + "  ·  by " + about.AUTHOR,
+              island.show_about),
         entry("quit", "xmark", "Quit Dynamic Island", lambda: "Close the island completely", island.request_quit),
     ]

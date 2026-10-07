@@ -46,10 +46,10 @@ Click it for a ring of action buttons.
   it on, because it needs calendar access)
 
 **Shelf**
-- Drag files straight onto the island to park them. It opens with a drawer on its right holding
-  their icons; a folder mark beside the battery shows there is something on the Shelf.
-- Hover to open the island and its drawer: drag a file out to use it wherever you need it, click
-  one to show it in Finder, or clear the Shelf with the ✕.
+- Drag files straight onto the island to park them. It opens with a drawer on its right listing
+  them by icon and name; a folder mark beside the battery shows there is something on the Shelf.
+- Hover to open the island and its drawer. Scroll the list if it is long, drag a file out to use it
+  wherever you need it, click one to show it in Finder, or clear the Shelf with the ✕.
 - Only the files' locations are kept; nothing is copied or moved until you drop an item somewhere.
 
 **Focus modes**
@@ -168,6 +168,7 @@ src/                 the app
   focus_panel.py       the drop-down under a ring button: focus modes, timer
   focus_editor.py      the Focus Modes window
   custom_buttons.py    custom buttons and their window
+  about.py             the About window
   categories_editor.py the Categories window
   calendar_events.py   next calendar event
   shelf.py             files parked on the island
