@@ -1,16 +1,18 @@
 """The island window: a borderless, immovable, click-through panel pinned to the notch."""
 import math
+import os
 import time
 from types import SimpleNamespace
 
 from AppKit import (
-    NSSound, NSApp, NSApplicationDidChangeScreenParametersNotification, NSBackingStoreBuffered, NSColor, NSEvent, NSFont,
+    NSDraggingItem, NSSound, NSURL, NSWorkspace, NSApp, NSApplicationDidChangeScreenParametersNotification, NSBackingStoreBuffered, NSColor, NSEvent, NSFont,
     NSFontDescriptorSystemDesignRounded, NSFontWeightBold, NSFontWeightMedium, NSFontWeightSemibold, NSImage,
     NSImageSymbolConfiguration, NSMainMenuWindowLevel, NSMakePoint, NSMakeRect, NSNull, NSDistributedNotificationCenter, NSNotificationCenter, NSOpenPanel, NSPanel, NSRunLoop,
     NSRunLoopCommonModes, NSTimer, NSValue, NSView, NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary, NSWindowCollectionBehaviorIgnoresCycle,
     NSWindowCollectionBehaviorStationary, NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel,
 )
+import objc
 from Foundation import NSUserName
 from Quartz import (
     CABasicAnimation, CAGradientLayer, CAKeyframeAnimation, CAMediaTimingFunction, CALayer, CAShapeLayer, CASpringAnimation, CATextLayer, CATransaction,
@@ -18,6 +20,7 @@ from Quartz import (
     kCALayerMaxXMinYCorner, kCALayerMinXMinYCorner,
 )
 
+import about
 import actions
 import autostart
 import backgrounds
@@ -51,6 +54,10 @@ GLOW_PAD = 40.0       # transparent margin around the island for the glow
 MENU_R = ring.RADIUS  # radius of the round buttons that fan out around the island
 MENU_GAP = 10.0       # space between the island and the inner ring of buttons
 RING_GAP = 8.0        # space between the inner and the outer ring
+SHELF_W = 150.0       # the drawer that slides out on the right while the Shelf holds files
+SHELF_EAR = 20.0      # extra width beside the notch for the folder mark, when compact
+SHELF_ROWS = 3        # files listed in the drawer at once; scroll for the rest
+SHELF_ROW_H = 19.0
 INNER_SLOTS = 8       # buttons visible at once in each ring; more are reached by turning it
 OUTER_SLOTS = 9
 
@@ -75,7 +82,22 @@ class IslandView(NSView):
         self.on_click(event.locationInWindow())
 
     def mouseDragged_(self, event):
-        self.on_drag(event.locationInWindow())
+        self.on_drag(event.locationInWindow(), event)
+
+    @objc.python_method
+    def start_file_drag(self, path, event, image, frame):
+        """Begin dragging a file out of the island; from here on it behaves like dragging the file itself."""
+        item = NSDraggingItem.alloc().initWithPasteboardWriter_(NSURL.fileURLWithPath_(path))
+        item.setDraggingFrame_contents_(frame, image)
+        self.beginDraggingSessionWithItems_event_source_([item], event, self)
+
+    @objc.typedSelector(b"Q@:@q")
+    def draggingSession_sourceOperationMaskForDraggingContext_(self, session, context):
+        return 1 | 2 | 4 | 16           # copy, link, generic, move: the destination picks
+
+    @objc.typedSelector(b"v@:@{CGPoint=dd}Q")
+    def draggingSession_endedAtPoint_operation_(self, session, point, operation):
+        self.on_drag_out_ended(operation != 0)
 
     def mouseUp_(self, event):
         self.on_release(event.locationInWindow())
@@ -127,9 +149,18 @@ class Island:
         self.focus_editor.values = self.settings
         self.focus_dropdown = None    # built once the island's window exists
         self.last_block_toast = 0.0
+        self.about_window = about.About(self.check_for_updates)
         self.timer_end = None         # when the countdown timer finishes
         self.stopwatch_start = None   # when the stopwatch was started
         self.drag_over = False        # files are being dragged over the island
+        self.ext = 0.0                # how far the island currently reaches out to the right
+        self.ring_ext = None          # the drawer width the rings are laid out for
+        self.shape_key = None         # (mode, extension) the island is drawn in
+        self.shelf_press = None       # (path, point) of a shelf icon being pressed
+        self.dragging_out = False     # a shelf file is being dragged out
+        self.shelf_hover = None       # index of the listed file, or "clear", under the pointer
+        self.shelf_offset = 0         # how far the list in the drawer is scrolled
+        self._icons = {}              # file icons by path
         self.event_alerts = set()     # (event id, kind) already announced
         self.seeking = None           # fraction 0..1 while the progress bar is being dragged
         self.media_layout = None      # whether the middle column is laid out for media right now
@@ -190,6 +221,7 @@ class Island:
         self.view.on_release = self.on_release
         self.view.on_file_drag = self.on_file_drag
         self.view.on_file_drop = self.on_file_drop
+        self.view.on_drag_out_ended = self.on_drag_out_ended
         self.view.registerForDraggedTypes_(["public.file-url"])
         self.root = CALayer.layer()
         self.view.setLayer_(self.root)
@@ -253,6 +285,27 @@ class Island:
             a.setDuration_(3.4)
             self.glow.addAnimation_forKey_(a, "pulse" if key == "shadowOpacity" else "welcome-" + key)
 
+    def drawer_w(self):
+        """Width of the Shelf drawer: out while there are files in it, or files are being dragged in."""
+        return SHELF_W if (self.settings["shelf"] or self.drag_over or self.dragging_out) else 0.0
+
+    def layout_rings(self, ext):
+        """Place both rings round the expanded island, which reaches `ext` further to the right
+        when the Shelf drawer is out."""
+        hx, hy = self.exp_w / 2 + ext / 2, self.exp_h
+        inner_offset = MENU_GAP + MENU_R
+        outer_offset = inner_offset + 2 * MENU_R + RING_GAP
+        shift = lambda points: [(x + ext / 2, y) for x, y in points]
+        self.inner_pos = shift(ring.positions(hx, hy, inner_offset, INNER_SLOTS))
+        self.outer_pos = shift(ring.positions(hx, hy, outer_offset, OUTER_SLOTS))
+        self.ring_ext = ext
+        # How far each ring reaches from the island's centre line, for deciding what the pointer is over.
+        self.inner_reach = (hx + inner_offset + MENU_R + 6, hy + inner_offset + MENU_R + 6)
+        self.outer_reach = (hx + outer_offset + MENU_R + 6, hy + outer_offset + MENU_R + 6)
+        for which, points in ((self.inner, self.inner_pos), (self.outer, self.outer_pos)):
+            if which is not None:
+                which.move_to(points)
+
     def relocate(self):
         """(Re)pin the window to the built-in display's notch; hide if there is no built-in display."""
         scr = screen_util.builtin_screen()
@@ -270,21 +323,18 @@ class Island:
         # Whole-point window size; a fractional one leaves a hairline gap between island and screen edge.
         # Two rings of buttons hug the expanded island: categories close in, their buttons further out.
         hx, hy = self.exp_w / 2, self.exp_h
-        inner_offset = MENU_GAP + MENU_R
-        outer_offset = inner_offset + 2 * MENU_R + RING_GAP
-        self.inner_pos = ring.positions(hx, hy, inner_offset, INNER_SLOTS)
-        self.outer_pos = ring.positions(hx, hy, outer_offset, OUTER_SLOTS)
-        # How far each ring reaches, for deciding what the pointer is over.
-        self.inner_reach = (hx + inner_offset + MENU_R + 6, hy + inner_offset + MENU_R + 6)
-        self.outer_reach = (hx + outer_offset + MENU_R + 6, hy + outer_offset + MENU_R + 6)
-        # Leave room for the buttons' spring overshoot, or the window edge clips them mid-bounce.
-        self.win_w = 2 * math.ceil(max(hx + GLOW_PAD, (hx + outer_offset) * 1.06 + MENU_R + 10))
+        outer_offset = MENU_GAP + 3 * MENU_R + RING_GAP
+        self.layout_rings(self.drawer_w())
+        # Room for the drawer on the right, and for the buttons' spring overshoot, or the window
+        # edge clips them mid-bounce. (The window is transparent and click-through, so extra width is free.)
+        self.win_w = 2 * math.ceil(max(hx + GLOW_PAD, (hx + SHELF_W + outer_offset) * 1.04 + MENU_R + 10))
         self.win_h = math.ceil(max(hy + GLOW_PAD, (hy + outer_offset) * 1.06 + MENU_R + 10))
         self.panel.setFrame_display_(
             NSMakeRect(self.cx - self.win_w / 2, self.top - self.win_h, self.win_w, self.win_h), True)
         self.build_layers()
         self.screen_ok = True
         self.mode = None
+        self.shape_key = None
         self.panel.orderFrontRegardless()
         if self.settings["lockscreen"]:
             lockscreen.attach(self.panel.windowNumber())
@@ -396,6 +446,51 @@ class Island:
         self.batt_fill.setPosition_((rx - 10.5, mid))
         for l in (shell, nub, self.batt_fill):
             self.batt_glyph.addSublayer_(l)
+
+        # Folder mark, shown beside the notch (left of the battery) while the Shelf holds something.
+        self.shelf_mark = self.symbol_layer(self.ambient, self.nw / 2 + 13, mid)
+        self.set_symbol(self.shelf_mark, "folder.fill", WHITE, 11.0)
+        _no_anim(lambda: self.shelf_mark.setOpacity_(0))
+        self.ear_frame = self.ear_text.frame()      # the right ear's contents slide over to make room
+        self.ear_shift = 0.0
+
+        # The Shelf drawer: the part of the expanded island that slides out on the right.
+        dx = self.exp_w / 2
+        self.drawer = self.group(self.island)
+        rule = CALayer.layer()
+        rule.setFrame_(NSMakeRect(dx + 1, -self.exp_h + 10, 1, self.exp_h - 20))
+        rule.setCornerRadius_(0.5)
+        rule.setBackgroundColor_(FAINT.CGColor())
+        self.drawer.addSublayer_(rule)
+        # A thin header (title, count, clear) and below it the list: icon and name on each row.
+        head = -8.5
+        self.drawer_title = self.text_layer(self.drawer, dx + 12, head, SHELF_W - 40, 8.5, GRAY, "left",
+                                            NSFontWeightBold)
+        self.clear_pos = (dx + SHELF_W - 14, head)
+        self.clear_mark = self.symbol_layer(self.drawer, *self.clear_pos)
+        self.set_symbol(self.clear_mark, "xmark", GRAY, 8.5)
+        first = -16.0 - SHELF_ROW_H / 2                 # centre of the first row
+        self.shelf_pos = [(dx + 18, first - i * SHELF_ROW_H) for i in range(SHELF_ROWS)]    # icon centres
+        self.shelf_rows = []
+        for x, y in self.shelf_pos:
+            back = CALayer.layer()                      # highlight under the pointer
+            back.setFrame_(NSMakeRect(dx + 6, y - SHELF_ROW_H / 2 + 1, SHELF_W - 12, SHELF_ROW_H - 2))
+            back.setCornerRadius_(5)
+            back.setBackgroundColor_(NSColor.colorWithWhite_alpha_(1.0, 0.14).CGColor())
+            back.setOpacity_(0)
+            self.drawer.addSublayer_(back)
+            icon = CALayer.layer()
+            icon.setBounds_(NSMakeRect(0, 0, 16, 16))
+            icon.setPosition_((x, y))
+            icon.setContentsGravity_("resizeAspect")
+            icon.setContentsScale_(self.scale)
+            self.drawer.addSublayer_(icon)
+            name = self.text_layer(self.drawer, x + 12, y, SHELF_W - 40, 10.5, WHITE, "left")
+            name.setTruncationMode_("middle")           # keeps the file extension in view
+            self.shelf_rows.append((back, icon, name))
+        self.drawer_note = self.text_layer(self.drawer, dx + 8, -self.exp_h / 2 - 4, SHELF_W - 14, 10.5, GRAY, "center")
+        self.shelf_shown = None
+        _no_anim(lambda: self.drawer.setOpacity_(0))
 
         # ---- Expanded content below the notch: clock | now / controls | battery ring ----
         w = self.exp_w
@@ -586,22 +681,32 @@ class Island:
 
     # ---- shape & effects -------------------------------------------------
 
-    def set_shape(self, w, h, radius, bounce=True):
+    def set_shape(self, w, h, radius, bounce=True, ext=0.0):
+        """Resize the island: `w` wide about the camera, plus `ext` more on the right."""
         # Bounce only when growing. When shrinking, a critically damped spring settles without
         # undershooting, so the island never gets smaller than the notch it sits on.
         damping = 19.0 if bounce else 34.0
-        self.size = (w, h)
-        new = NSMakeRect(-w / 2, -h, w, h)
+        self.size, self.ext = (w, h), ext
+        new = NSMakeRect(-w / 2, -h, w + ext, h)
+        centre = NSMakePoint(self.win_w / 2 + ext / 2, self.win_h)     # keeps x = 0 on the camera
         for layer in (self.glow, self.island):
-            old = (layer.presentationLayer() or layer).bounds()
-            _no_anim(lambda layer=layer: layer.setBounds_(new))
+            shown = layer.presentationLayer() or layer
+            old, old_centre = shown.bounds(), shown.position()
+
+            def apply(layer=layer):
+                layer.setBounds_(new)
+                layer.setPosition_(centre)
+            _no_anim(apply)
             layer.setCornerRadius_(radius)
             layer.addAnimation_forKey_(
                 _spring("bounds", NSValue.valueWithRect_(old), NSValue.valueWithRect_(new), damping), "shape")
+            layer.addAnimation_forKey_(
+                _spring("position", NSValue.valueWithPoint_(old_centre), NSValue.valueWithPoint_(centre), damping),
+                "place")
         for sign, s in self.shoulders:
             old_x = (s.presentationLayer() or s).position().x
-            new_x = sign * w / 2
-            _no_anim(lambda s=s: s.setPosition_((new_x, 0)))
+            new_x = sign * w / 2 + (ext if sign > 0 else 0.0)
+            _no_anim(lambda s=s, new_x=new_x: s.setPosition_((new_x, 0)))
             s.addAnimation_forKey_(_spring("position.x", old_x, new_x, damping), "shape")
 
     def pulse(self, color):
@@ -629,6 +734,15 @@ class Island:
         if self.can_seek() and self.prog_x - 6 <= x <= self.prog_x + self.prog_w + 6 and abs(y - self.prog_y) <= 8:
             self.seeking = self.seek_fraction(x)      # dragging continues in on_drag
             self.refresh(time.time())
+            return
+        hit = self.shelf_at(x, y)
+        if hit == "clear":
+            self.settings["shelf"][:] = []
+            settings.save(self.settings)
+            self.refresh(time.time())
+            return
+        if hit is not None:
+            self.shelf_press = (self.settings["shelf"][hit], hit, (x, y))     # a click reveals; a drag takes it out
             return
         if self.menu_open:
             for which in (self.outer, self.inner):
@@ -735,6 +849,10 @@ class Island:
             return self.outer
         return self.inner
 
+    def show_about(self):
+        self.close_menu()
+        self.about_window.show()
+
     def edit_categories(self):
         self.close_menu()
         self.categories_editor.show()
@@ -796,7 +914,7 @@ class Island:
 
     def on_file_drag(self, over):
         """Files are being dragged across the island (or just left). Returns the drag operation offered."""
-        if self.locked:
+        if self.locked or self.dragging_out:        # not on the lock screen, and not our own file coming back
             return 0
         if over != self.drag_over:
             self.drag_over = over
@@ -808,11 +926,87 @@ class Island:
         added = shelf.add(self.settings, shelf.paths_from(pasteboard))
         if added:
             settings.save(self.settings)
-            self.update_menu()
         count = len(self.settings["shelf"])
         self.toast("Added to the Shelf" if added else "Already on the Shelf",
-                   "%d item%s kept  ·  Files › Shelf" % (count, "" if count == 1 else "s"), BLUE)
+                   "%d item%s kept" % (count, "" if count == 1 else "s"), BLUE)
         return bool(added)
+
+    def on_drag_out_ended(self, dropped):
+        """A shelf file was let go: once it has landed somewhere it leaves the Shelf."""
+        path = self.shelf_press[0] if self.shelf_press else None
+        self.dragging_out = False
+        self.shelf_press = None
+        if dropped and path in self.settings["shelf"]:
+            self.settings["shelf"].remove(path)
+            settings.save(self.settings)
+        self.refresh(time.time())
+
+    def over_drawer(self, x, y):
+        return (self.mode == "expanded" and self.ext >= SHELF_W
+                and self.exp_w / 2 <= x <= self.exp_w / 2 + self.ext and -self.exp_h <= y <= 0)
+
+    def shelf_at(self, x, y):
+        """What part of the drawer is at this point: a file's index, "clear", or None."""
+        paths = self.settings["shelf"]
+        if not paths or not self.over_drawer(x, y):
+            return None
+        cx, cy = self.clear_pos
+        if abs(x - cx) <= 10 and abs(y - cy) <= 8:
+            return "clear"
+        for row, (_, ty) in enumerate(self.shelf_pos):
+            index = self.shelf_offset + row
+            if index < len(paths) and abs(y - ty) <= SHELF_ROW_H / 2:
+                return index
+        return None
+
+    def scroll_shelf(self, step):
+        """Scroll the list in the drawer by one file. Returns False if there is nowhere to go."""
+        last = max(0, len(self.settings["shelf"]) - SHELF_ROWS)
+        target = max(0, min(last, self.shelf_offset + step))
+        if target == self.shelf_offset:
+            return False
+        self.shelf_offset = target
+        return True
+
+    def file_icon(self, path):
+        if path not in self._icons:
+            self._icons[path] = NSWorkspace.sharedWorkspace().iconForFile_(path)
+        return self._icons[path]
+
+    def draw_shelf(self):
+        """Bring the drawer and the folder mark up to date with what is on the Shelf."""
+        paths = self.settings["shelf"]
+        self.shelf_offset = max(0, min(self.shelf_offset, len(paths) - SHELF_ROWS))    # files may have left
+        key = (tuple(paths), self.drag_over, self.shelf_offset, self.shelf_hover)
+        if key == self.shelf_shown:
+            return
+        self.shelf_shown = key
+        hovered = self.shelf_hover if isinstance(self.shelf_hover, int) else None
+
+        def apply():
+            for row, (back, icon, _) in enumerate(self.shelf_rows):
+                index = self.shelf_offset + row
+                icon.setContents_(self.file_icon(paths[index]) if index < len(paths) else None)
+                back.setOpacity_(1 if index == hovered else 0)
+            self.clear_mark.setOpacity_(1 if paths else 0)
+            self.shelf_mark.setOpacity_(1 if paths else 0)
+            # Clock-side stays put; battery, music bars and countdown slide right to clear the folder mark.
+            shift = SHELF_EAR if paths else 0.0
+            self.batt_glyph.setPosition_((shift, 0))
+            self.bars.setPosition_((shift, 0))
+            f = self.ear_frame
+            self.ear_text.setFrame_(NSMakeRect(f.origin.x + shift, f.origin.y, f.size.width, f.size.height))
+        _no_anim(apply)
+        for row, (_, _, name) in enumerate(self.shelf_rows):
+            index = self.shelf_offset + row
+            shown = (os.path.basename(paths[index].rstrip("/")) or paths[index]) if index < len(paths) else ""
+            self.set_text(name, shown)
+        if len(paths) > SHELF_ROWS:         # say where in the list we are, since not all of it shows
+            last = self.shelf_offset + SHELF_ROWS
+            self.set_text(self.drawer_title, "SHELF  ·  %d–%d OF %d" % (self.shelf_offset + 1, last, len(paths)))
+        else:
+            self.set_text(self.drawer_title, "SHELF")
+        self.set_text(self.drawer_note, "" if paths else "Drop files here")
 
     # ---- calendar ----
 
@@ -869,6 +1063,16 @@ class Island:
     def on_scroll(self, delta, precise):
         """Scrolling on the island itself changes the volume; around it, it turns the open button ring."""
         if not delta:
+            return
+        if self.over_drawer(*self.pointer):     # the list in the Shelf drawer
+            notch = 12.0 if precise else 1.0
+            self.scroll_acc = max(-notch, min(notch, self.scroll_acc + delta))
+            now = time.time()
+            if abs(self.scroll_acc) >= notch and now - self.last_rotate >= 0.08:
+                self.last_rotate = now
+                if self.scroll_shelf(1 if self.scroll_acc < 0 else -1):
+                    self.refresh(now)
+                self.scroll_acc = 0.0
             return
         if self.menu_open and not self.on_island:
             notch = 12.0 if precise else 1.0
@@ -934,12 +1138,25 @@ class Island:
     def seek_fraction(self, x):
         return max(0.0, min(1.0, (x - self.prog_x) / self.prog_w))
 
-    def on_drag(self, point):
+    def on_drag(self, point, event=None):
         if self.seeking is not None:
             self.seeking = self.seek_fraction(point.x - self.win_w / 2)
             self.refresh(time.time())
+        elif self.shelf_press is not None and not self.dragging_out and event is not None:
+            path, index, (px, py) = self.shelf_press
+            x, y = point.x - self.win_w / 2, point.y - self.win_h
+            if math.hypot(x - px, y - py) > 4:              # moved far enough to mean a drag
+                self.dragging_out = True
+                row = max(0, min(SHELF_ROWS - 1, index - self.shelf_offset))
+                tx, ty = self.shelf_pos[row]
+                frame = NSMakeRect(self.win_w / 2 + tx - 12, self.win_h + ty - 12, 24, 24)
+                self.view.start_file_drag(path, event, self.file_icon(path), frame)
 
     def on_release(self, point):
+        if self.shelf_press is not None and not self.dragging_out:
+            shelf.reveal(self.shelf_press[0])               # a plain click shows the file in Finder
+            self.shelf_press = None
+            return
         if self.seeking is None:
             return
         fraction, self.seeking = self.seek_fraction(point.x - self.win_w / 2), None
@@ -1008,10 +1225,6 @@ class Island:
     def show_timer_dropdown(self):
         self.dropdown_panel()
         self.place_dropdown(self.focus_dropdown.show_timer)
-
-    def show_shelf_dropdown(self):
-        self.dropdown_panel()
-        self.place_dropdown(self.focus_dropdown.show_shelf)
 
     def dropdown_panel(self):
         if self.focus_dropdown is None:
@@ -1083,7 +1296,7 @@ class Island:
         m = NSEvent.mouseLocation()
         x, y = m.x - self.cx, m.y - self.top
         w, h = self.size
-        on_island = self.on_island = abs(x) <= w / 2 + 3 and -h - 4 <= y <= 2
+        on_island = self.on_island = -w / 2 - 3 <= x <= w / 2 + self.ext + 3 and -h - 4 <= y <= 2
         self.pointer = (x, y)
         hovered = None
         if self.menu_open:
@@ -1093,10 +1306,10 @@ class Island:
                     hovered = (which, slot)
                     break
             reach_x, reach_y = self.outer_reach if self.outer.visible else self.inner_reach
-            in_ring = abs(x) <= reach_x and -reach_y <= y <= 2
+            in_ring = abs(x - self.ring_ext / 2) <= reach_x and -reach_y <= y <= 2
             if on_island or in_ring:
                 self.menu_seen = now
-            elif self.focus_dropdown is not None and (self.focus_dropdown.visible or self.focus_dropdown.dragging):
+            elif self.focus_dropdown is not None and self.focus_dropdown.visible:
                 self.menu_seen = now               # the drop-down belongs to the ring
             elif now - self.menu_seen > 0.6:      # pointer wandered off: fold the buttons away
                 self.close_menu()
@@ -1110,7 +1323,12 @@ class Island:
             self.hover = hovered
             self.refresh(now)
         # While the rings are open their whole area takes the mouse, so scrolling anywhere in it turns them.
-        inside = on_island or hovered is not None or in_ring or self.seeking is not None or self.drag_over
+        over_file = self.shelf_at(x, y)
+        if over_file != self.shelf_hover:
+            self.shelf_hover = over_file
+            self.refresh(now)
+        inside = (on_island or hovered is not None or in_ring or self.seeking is not None or self.drag_over
+                  or self.dragging_out)
         if self.focus_dropdown is not None and self.focus_dropdown.visible:
             f = self.focus_dropdown.frame()         # the drop-down sits under this window: let clicks reach it
             if f.origin.x <= m.x <= f.origin.x + f.size.width and f.origin.y <= m.y <= f.origin.y + f.size.height:
@@ -1136,13 +1354,19 @@ class Island:
             self.refresh(now)
 
         mode = "expanded" if (hover or self.menu_open or now < self.peek_until) else "compact"
-        if mode != self.mode:
-            self.mode = mode
+        drawer = self.drawer_w()
+        if drawer != self.ring_ext:
+            self.layout_rings(drawer)               # the rings step aside for the drawer
+        ext = drawer if mode == "expanded" else (SHELF_EAR if self.settings["shelf"] else 0.0)
+        if (mode, ext) != self.shape_key:
+            self.shape_key = (mode, ext)
             if mode == "expanded":
-                self.set_shape(self.exp_w, self.exp_h, 20)
+                self.set_shape(self.exp_w, self.exp_h, 20, bounce=mode != self.mode, ext=ext)
             else:
-                self.set_shape(self.compact_w, self.nh, 11, bounce=False)
+                self.set_shape(self.compact_w, self.nh, 11, bounce=False, ext=ext)
+            self.mode = mode
             self.detail.setOpacity_(1 if mode == "expanded" else 0)
+            self.drawer.setOpacity_(1 if mode == "expanded" else 0)
             self.ambient.setOpacity_(0 if mode == "expanded" else 1)   # shown larger below instead
 
     def refresh(self, now):
@@ -1241,9 +1465,15 @@ class Island:
         pointed = self.hovered_item() if self.menu_open else None
         hud_on = bool(self.hud and now < self.hud[1]) and pointed is None and not self.drag_over
         hud_level = 0.0
+        self.draw_shelf()
         if self.drag_over:
             count = len(S["shelf"])
             title, sub = "Drop to keep on the Shelf", "%d item%s there now" % (count, "" if count == 1 else "s")
+        elif self.shelf_hover == "clear":
+            title, sub = "Clear the Shelf", "Forgets all %d  ·  the files stay where they are" % len(S["shelf"])
+        elif self.shelf_hover is not None and self.shelf_hover < len(S["shelf"]):
+            path = S["shelf"][self.shelf_hover]
+            title, sub = os.path.basename(path.rstrip("/")) or path, "Drag out to use  ·  click to show in Finder"
         elif pointed is not None:               # the island doubles as the buttons' tooltip
             title, sub = pointed.label, pointed.status()
         elif hud_on:

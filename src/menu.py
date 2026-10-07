@@ -8,6 +8,7 @@ import copy
 import uuid
 from types import SimpleNamespace
 
+import about
 import autostart
 import backgrounds
 import custom_buttons
@@ -20,7 +21,7 @@ DEFAULT_CATEGORIES = [
     {"name": "Media", "icon": "play.fill", "items": ["previous", "play", "next", "mute"]},
     {"name": "System", "icon": "switch.2", "items": ["dark", "awake", "lock", "sleep"]},
     {"name": "Tools", "icon": "wrench.and.screwdriver.fill", "items": ["screenshot", "color", "calculator"]},
-    {"name": "Files", "icon": "folder.fill", "items": ["shelf", "downloads", "desktop", "documents", "applications"]},
+    {"name": "Files", "icon": "folder.fill", "items": ["downloads", "desktop", "documents", "applications"]},
     {"name": "Apps", "icon": "square.grid.2x2.fill", "items": ["activity", "system_settings", "terminal"]},
     {"name": "My Buttons", "icon": "star.fill", "items": []},
 ]
@@ -120,7 +121,6 @@ BUILTIN_LOOK = {
     "screenshot": ("camera.viewfinder", "Screenshot"),
     "color": ("eyedropper", "Color Picker"),
     "calculator": ("plus.forwardslash.minus", "Calculator"),
-    "shelf": ("tray.full.fill", "Shelf"),
     "downloads": ("arrow.down.to.line", "Downloads"),
     "desktop": ("menubar.dock.rectangle", "Desktop"),
     "documents": ("doc.fill", "Documents"),
@@ -176,10 +176,6 @@ def actions(island):
         "screenshot": make("screenshot", lambda: "Drag an area  ·  copied to clipboard", island.screenshot),
         "color": make("color", lambda: "Pick a colour  ·  copies its hex code", island.pick_color),
         "calculator": make("calculator", lambda: "Open Calculator", lambda: island.launch("Calculator")),
-        "shelf": make("shelf",
-                      lambda: ("%d kept  ·  click to see them" % len(S["shelf"])) if S["shelf"]
-                      else "Drag files onto the island to keep them",
-                      island.show_shelf_dropdown, lambda: bool(S["shelf"])),
         "downloads": make("downloads", lambda: "Open the Downloads folder", lambda: island.open_folder("~/Downloads")),
         "desktop": make("desktop", lambda: "Open the Desktop folder", lambda: island.open_folder("~/Desktop")),
         "documents": make("documents", lambda: "Open the Documents folder", lambda: island.open_folder("~/Documents")),
@@ -280,5 +276,7 @@ def settings_entries(island):
             entry("set:focus", "list.bullet", "Focus Modes",
                   lambda: "%d modes  ·  click to edit" % len(S["focus_modes"]), island.edit_focus_modes),
         ]),
+        entry("about", "info", "About Dynamic Island", lambda: about.version_text() + "  ·  by " + about.AUTHOR,
+              island.show_about),
         entry("quit", "xmark", "Quit Dynamic Island", lambda: "Close the island completely", island.request_quit),
     ]

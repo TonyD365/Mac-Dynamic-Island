@@ -215,6 +215,13 @@ class Ring:
                 b.removeAnimationForKey_("fade")
         return True
 
+    def move_to(self, slot_positions):
+        """The island changed width: re-seat the slots (and the buttons, if they are out)."""
+        self.pos = slot_positions
+        if self.visible:
+            for (b, _), point in zip(self.layers, slot_positions):
+                b.setPosition_(point)       # implicit animation: they slide across
+
     # ---- making room for a drop-down ----
 
     def hide_under(self, rect, except_slot=None):

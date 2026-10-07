@@ -1,4 +1,4 @@
-"""The drop-down that hangs under a ring button: focus modes and their length, the timer, the shelf."""
+"""The drop-down that hangs under a ring button: focus modes and their length, and the timer."""
 import objc
 from AppKit import (
     NSAppearance, NSAttributedString, NSBackingStoreBuffered, NSBox, NSBoxSeparator, NSButton, NSColor, NSFont,
@@ -7,8 +7,6 @@ from AppKit import (
 )
 
 import focus
-import settings
-import shelf
 from custom_buttons import _Action
 
 WIDTH = 264.0
@@ -27,8 +25,7 @@ class _KeyPanel(NSPanel):
 
     def resignKeyWindow(self):                  # clicked somewhere else
         objc.super(_KeyPanel, self).resignKeyWindow()
-        if not self.owner.dragging:             # dragging a file out must not fold the panel under it
-            self.owner.close()
+        self.owner.close()
 
 
 class FocusPanel:
@@ -38,7 +35,6 @@ class FocusPanel:
         self.anchor = (0.0, 0.0)        # screen point of the panel's top-centre
         self._keep = []
         self.field = None
-        self.dragging = False       # a shelf item is being dragged out
         style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         self.panel = _KeyPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, WIDTH, 100), style, NSBackingStoreBuffered, False)
@@ -263,48 +259,4 @@ class FocusPanel:
             self.field.selectText_(None)
             return
         self.island.start_timer(minutes)
-        self.close()
-
-    # ---- the shelf ----
-
-    def show_shelf(self):
-        island = self.island
-        self._keep = []
-        self.field = None
-        gray = NSColor.secondaryLabelColor()
-        if shelf.prune(island.settings):
-            settings.save(island.settings)
-        paths = island.settings["shelf"]
-        rows = [self.label("SHELF", 10.5, gray, bold=True, height=18)]
-        if not paths:
-            empty = NSTextField.wrappingLabelWithString_("Drag files onto the island to keep them here.")
-            empty.setFont_(NSFont.systemFontOfSize_(12))
-            empty.setTextColor_(gray)
-            rows.append((empty, 34.0))
-        else:
-            for path in paths:
-                row = shelf.ShelfRow.alloc().initWithFrame_(NSMakeRect(0, 0, WIDTH - 2 * PAD, shelf.ROW_HEIGHT))
-                rows.append((row.setup(path, self, WIDTH - 2 * PAD), shelf.ROW_HEIGHT))
-            rows.append(self.label("Drag out to use  ·  click to show in Finder", 10.5, gray,
-                                   height=20, center=True))
-            rows.append(self.separator())
-            rows.append(self.row_button("Clear Shelf", "", self.clear_shelf))
-        self.layout(rows)
-
-    def clear_shelf(self):
-        self.island.settings["shelf"][:] = []
-        settings.save(self.island.settings)
-        self.island.update_menu()
-        self.close()
-
-    def drag_started(self):
-        self.dragging = True
-
-    def drag_ended(self, path, dropped):
-        """A shelf item was let go: once it has landed somewhere it leaves the shelf."""
-        self.dragging = False
-        if dropped and path in self.island.settings["shelf"]:
-            self.island.settings["shelf"].remove(path)
-            settings.save(self.island.settings)
-            self.island.update_menu()
         self.close()
