@@ -1,11 +1,12 @@
 """The island window: a borderless, immovable, click-through panel pinned to the notch."""
 import math
 import os
+import threading
 import time
 from types import SimpleNamespace
 
 from AppKit import (
-    NSDraggingItem, NSSound, NSURL, NSWorkspace, NSApp, NSApplicationDidChangeScreenParametersNotification, NSBackingStoreBuffered, NSColor, NSEvent, NSFont,
+    NSPasteboard, NSPasteboardNameDrag, NSDraggingItem, NSSound, NSURL, NSWorkspace, NSApp, NSApplicationDidChangeScreenParametersNotification, NSBackingStoreBuffered, NSColor, NSEvent, NSFont,
     NSFontDescriptorSystemDesignRounded, NSFontWeightBold, NSFontWeightMedium, NSFontWeightSemibold, NSImage,
     NSImageSymbolConfiguration, NSMainMenuWindowLevel, NSMakePoint, NSMakeRect, NSNull, NSDistributedNotificationCenter, NSNotificationCenter, NSOpenPanel, NSPanel, NSRunLoop,
     NSRunLoopCommonModes, NSTimer, NSValue, NSView, NSWindowCollectionBehaviorCanJoinAllSpaces,
@@ -140,6 +141,8 @@ class Island:
         self.editor.on_change = self.buttons_changed
         if menu.normalize(self.settings):
             settings.save(self.settings)
+        if shelf.prune(self.settings):          # items taken out of the Shelf folder while the island was closed
+            settings.save(self.settings)
         self.categories_editor = categories_editor.Editor()
         self.categories_editor.values = self.settings
         self.categories_editor.on_change = self.update_menu
@@ -160,6 +163,13 @@ class Island:
         self.dragging_out = False     # a shelf file is being dragged out
         self.shelf_hover = None       # index of the listed file, or "clear", under the pointer
         self.shelf_offset = 0         # how far the list in the drawer is scrolled
+        # Watching for a file being dragged anywhere on screen (see watch_file_drag).
+        self.button_down = False
+        self.press_count = 0          # the drag pasteboard's change count when the button went down
+        self.drag_count = None        # the change count whose contents are in drag_paths
+        self.drag_paths = []          # files in the drag now under way, if any
+        self.pending_drop = None      # (paths, time) let go over the island, in case macOS doesn't deliver them
+        self.shelf_done = []          # results of moves finished on the worker thread, for the main loop
         self._icons = {}              # file icons by path
         self.event_alerts = set()     # (event id, kind) already announced
         self.seeking = None           # fraction 0..1 while the progress bar is being dragged
@@ -468,7 +478,7 @@ class Island:
                                             NSFontWeightBold)
         self.clear_pos = (dx + SHELF_W - 14, head)
         self.clear_mark = self.symbol_layer(self.drawer, *self.clear_pos)
-        self.set_symbol(self.clear_mark, "xmark", GRAY, 8.5)
+        self.set_symbol(self.clear_mark, "arrow.uturn.backward", GRAY, 8.5)      # put everything back
         first = -16.0 - SHELF_ROW_H / 2                 # centre of the first row
         self.shelf_pos = [(dx + 18, first - i * SHELF_ROW_H) for i in range(SHELF_ROWS)]    # icon centres
         self.shelf_rows = []
@@ -737,9 +747,7 @@ class Island:
             return
         hit = self.shelf_at(x, y)
         if hit == "clear":
-            self.settings["shelf"][:] = []
-            settings.save(self.settings)
-            self.refresh(time.time())
+            self.shelf_work(lambda: ("back", shelf.put_back_all(self.settings)))
             return
         if hit is not None:
             self.shelf_press = (self.settings["shelf"][hit], hit, (x, y))     # a click reveals; a drag takes it out
@@ -913,31 +921,101 @@ class Island:
     # ---- the shelf ----
 
     def on_file_drag(self, over):
-        """Files are being dragged across the island (or just left). Returns the drag operation offered."""
+        """macOS asks whether files dragged over the island may be dropped. Returns the operation offered."""
         if self.locked or self.dragging_out:        # not on the lock screen, and not our own file coming back
             return 0
-        if over != self.drag_over:
-            self.drag_over = over
-            self.refresh(time.time())
         return 4 if over else 0             # NSDragOperationGeneric: nothing is copied or moved
 
     def on_file_drop(self, pasteboard):
+        """macOS delivered a drop."""
+        self.pending_drop = None            # delivered properly: the fallback has nothing left to do
+        return self.take_files(shelf.paths_from(pasteboard))
+
+    def take_files(self, paths):
+        """Move the dropped files onto the Shelf."""
         self.drag_over = False
-        added = shelf.add(self.settings, shelf.paths_from(pasteboard))
-        if added:
+        self.shelf_work(lambda: ("store", shelf.store(self.settings, paths)))
+        return True
+
+    def shelf_work(self, job):
+        """Run a Shelf move off the main thread (a move to another disk copies, and can take a while).
+        Its result is picked up by shelf_finished on the next tick."""
+        threading.Thread(target=lambda: self.shelf_done.append(job()), daemon=True).start()
+
+    def shelf_finished(self):
+        """Announce moves that have completed since the last tick."""
+        while self.shelf_done:
+            kind, result = self.shelf_done.pop(0)
             settings.save(self.settings)
-        count = len(self.settings["shelf"])
-        self.toast("Added to the Shelf" if added else "Already on the Shelf",
-                   "%d item%s kept" % (count, "" if count == 1 else "s"), BLUE)
-        return bool(added)
+            count = len(self.settings["shelf"])
+            kept = "%d item%s on the Shelf" % (count, "" if count == 1 else "s")
+            if kind == "store":
+                stored, failed = result
+                if failed and not stored:
+                    name, reason = failed[0]
+                    self.toast("Couldn't move %s" % name, reason, ORANGE, 4.0)
+                elif failed:
+                    self.toast("Moved %d to the Shelf" % stored, "%d could not be moved" % len(failed), ORANGE, 4.0)
+                elif stored:
+                    self.toast("Moved to the Shelf", kept, BLUE)
+                else:
+                    self.toast("Already on the Shelf", kept, BLUE)
+            else:
+                done, stuck = result
+                if stuck:
+                    self.toast("Put back %d" % done, "%d could not be moved and stay here" % stuck, ORANGE, 4.0)
+                else:
+                    self.toast("Put back %d item%s" % (done, "" if done == 1 else "s"),
+                               "Returned to where they came from", BLUE)
+            self.refresh(time.time())
+
+    def watch_file_drag(self, now, x, y):
+        """Notice a file being dragged anywhere on screen, without relying on macOS telling this window.
+
+        The island is click-through until the pointer is on it, and it lives in its own window-server
+        space above everything else; in practice macOS does not reliably offer such a window a drag
+        that started elsewhere. So the drag is detected directly: the mouse button is down and the
+        system's drag pasteboard has changed since it went down and holds files. While that is true
+        the island opens as the pointer comes near, and if the files are let go over it they are
+        taken from the drag pasteboard.
+        """
+        down = bool(NSEvent.pressedMouseButtons() & 1)
+        board = NSPasteboard.pasteboardWithName_(NSPasteboardNameDrag)
+        count = board.changeCount()
+        if down and not self.button_down:
+            self.press_count = count
+        dragging = down and count != self.press_count and not self.dragging_out and not self.locked
+        if dragging and count != self.drag_count:           # read the pasteboard once per drag
+            self.drag_count = count
+            self.drag_paths = shelf.paths_from(board)
+        dragging = dragging and bool(self.drag_paths)
+
+        # A generous target: the whole expanded island and its drawer, with some margin.
+        near = (-self.exp_w / 2 - 20 <= x <= self.exp_w / 2 + SHELF_W + 20) and y >= -self.exp_h - 16
+        over = dragging and near
+        if over:
+            self.peek_until = max(self.peek_until, now + 0.25)      # stay open while the files hover
+        if over != self.drag_over:
+            self.drag_over = over
+            self.refresh(now)
+        if self.button_down and not down and self.drag_paths:      # the button has just come up
+            if near and not self.dragging_out and not self.locked and count != self.press_count:
+                self.pending_drop = (list(self.drag_paths), now)
+            self.drag_paths = []
+        self.button_down = down
+        # Give macOS a moment to deliver the drop itself; if it has not, take the files anyway.
+        if self.pending_drop is not None and now - self.pending_drop[1] > 0.2:
+            paths, self.pending_drop = self.pending_drop[0], None
+            self.take_files(paths)
+        return dragging
 
     def on_drag_out_ended(self, dropped):
         """A shelf file was let go: once it has landed somewhere it leaves the Shelf."""
         path = self.shelf_press[0] if self.shelf_press else None
         self.dragging_out = False
         self.shelf_press = None
-        if dropped and path in self.settings["shelf"]:
-            self.settings["shelf"].remove(path)
+        # Moved out: it has left the Shelf. Copied somewhere (an attachment, say): it is still here.
+        if shelf.prune(self.settings):
             settings.save(self.settings)
         self.refresh(time.time())
 
@@ -1298,6 +1376,9 @@ class Island:
         w, h = self.size
         on_island = self.on_island = -w / 2 - 3 <= x <= w / 2 + self.ext + 3 and -h - 4 <= y <= 2
         self.pointer = (x, y)
+        file_drag = self.watch_file_drag(now, x, y)
+        if self.shelf_done:
+            self.shelf_finished()
         hovered = None
         if self.menu_open:
             for which in (self.outer, self.inner):
@@ -1335,8 +1416,9 @@ class Island:
                 inside = False
         if inside:
             self.last_inside = now
-        # Click-through everywhere except on the island and its buttons.
-        self.panel.setIgnoresMouseEvents_(not inside)
+        # Click-through everywhere except on the island and its buttons. While files are in the air the
+        # window takes the mouse throughout, so macOS can hand it the drop if it is going to.
+        self.panel.setIgnoresMouseEvents_(not (inside or file_drag))
         hover = now - self.last_inside < 0.3
 
         self.check_levels(now)
@@ -1468,12 +1550,12 @@ class Island:
         self.draw_shelf()
         if self.drag_over:
             count = len(S["shelf"])
-            title, sub = "Drop to keep on the Shelf", "%d item%s there now" % (count, "" if count == 1 else "s")
+            title, sub = "Drop to move to the Shelf", "%d item%s there now" % (count, "" if count == 1 else "s")
         elif self.shelf_hover == "clear":
-            title, sub = "Clear the Shelf", "Forgets all %d  ·  the files stay where they are" % len(S["shelf"])
+            title, sub = "Put everything back", "Returns all %d to where they came from" % len(S["shelf"])
         elif self.shelf_hover is not None and self.shelf_hover < len(S["shelf"]):
             path = S["shelf"][self.shelf_hover]
-            title, sub = os.path.basename(path.rstrip("/")) or path, "Drag out to use  ·  click to show in Finder"
+            title, sub = os.path.basename(path.rstrip("/")) or path, "Drag out  ·  click to reveal"
         elif pointed is not None:               # the island doubles as the buttons' tooltip
             title, sub = pointed.label, pointed.status()
         elif hud_on:

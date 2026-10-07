@@ -22,7 +22,7 @@ LATEST_URL = "https://api.github.com/repos/%s/releases/latest" % REPO
 # Only files served from this repository's own releases are ever downloaded.
 DOWNLOAD_PREFIX = "https://github.com/%s/releases/download/" % REPO
 CACHE = os.path.expanduser("~/Library/Caches/DynamicIsland")
-CHECK_EVERY = 6 * 3600
+CHECK_EVERY = 3600          # look for a new release once an hour
 FIRST_CHECK_AFTER = 20
 
 

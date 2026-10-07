@@ -25,7 +25,8 @@ DEFAULTS = {
     "auto_update": True,    # download and open new releases without being asked
     "focus_modes": [],      # filled with focus.DEFAULT_MODES on first run; edited in the Focus Modes window
     "calendar": False,      # show the next calendar event (asks for calendar access when switched on)
-    "shelf": [],            # paths of files parked on the island
+    "shelf": [],            # files on the Shelf: their paths inside the Shelf folder
+    "shelf_origins": {},    # for each of those, the folder it was moved from
     "categories": [],       # [{"name", "icon", "items": [button ids]}]; filled in by menu.normalize
     "known_items": [],      # button ids that existed when the categories were last saved
     "custom_buttons": [],   # [{"name", "icon", "kind", "target"}], edited in the Custom Buttons window
@@ -38,6 +39,7 @@ def load():
     values["custom_buttons"] = []     # never share the default list
     values["categories"] = []
     values["shelf"] = []
+    values["shelf_origins"] = {}
     values["known_items"] = []
     values["focus_modes"] = copy.deepcopy(focus.DEFAULT_MODES)
     try:

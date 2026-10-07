@@ -46,11 +46,14 @@ Click it for a ring of action buttons.
   it on, because it needs calendar access)
 
 **Shelf**
-- Drag files straight onto the island to park them. It opens with a drawer on its right listing
-  them by icon and name; a folder mark beside the battery shows there is something on the Shelf.
-- Hover to open the island and its drawer. Scroll the list if it is long, drag a file out to use it
-  wherever you need it, click one to show it in Finder, or clear the Shelf with the ✕.
-- Only the files' locations are kept; nothing is copied or moved until you drop an item somewhere.
+- Drag files straight onto the island and they are **moved** onto the Shelf: they leave the folder
+  they were in and are kept in the island's own storage. A drawer on the island's right lists them
+  by icon and name, and a folder mark beside the battery shows the Shelf is holding something.
+- Hover to open the island and its drawer. Scroll the list if it is long, drag a file out to put
+  it wherever you need it, or click one to show it in Finder.
+- The ↩ in the drawer puts everything back where it came from. Nothing on the Shelf is ever
+  deleted or overwritten; if a file's old name has been taken, it comes back as "name 2".
+- Stored in `~/Library/Application Support/DynamicIsland/Shelf`.
 
 **Focus modes**
 - Named modes with their own default length; you are asked how long each time you start one
@@ -92,7 +95,7 @@ using them.
 
 ## Updates
 
-A released app checks this repository for the release marked **Latest**. When it carries a higher
+A released app checks this repository once an hour for the release marked **Latest**. When it carries a higher
 version number, the app tells you, downloads the installer, verifies its SHA-256 checksum and opens
 it. The installer quits the old copy and starts the new one.
 

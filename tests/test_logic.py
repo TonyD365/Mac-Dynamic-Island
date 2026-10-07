@@ -398,18 +398,115 @@ class CalendarTests(unittest.TestCase):
 
 
 class ShelfTests(unittest.TestCase):
-    def test_add_and_prune(self):
-        with tempfile.TemporaryDirectory() as folder:
-            one, two = os.path.join(folder, "a.txt"), os.path.join(folder, "b.txt")
-            for path in (one, two):
-                open(path, "w").close()
-            values = {"shelf": []}
-            self.assertEqual(shelf.add(values, [one, two, one, os.path.join(folder, "missing")]), 2)
-            self.assertEqual(shelf.add(values, [one]), 0)                   # already there
-            os.remove(two)
-            self.assertTrue(shelf.prune(values))
-            self.assertEqual(values["shelf"], [os.path.realpath(one)] if values["shelf"][0] != one else [one])
-            self.assertFalse(shelf.prune(values))
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        base = os.path.realpath(self.root.name)
+        self.home, self.other = os.path.join(base, "home"), os.path.join(base, "other")
+        os.makedirs(self.home)
+        os.makedirs(self.other)
+        self.folder = Stub(shelf, "FOLDER", os.path.join(base, "Shelf"))
+        self.folder.__enter__()
+        self.values = {"shelf": [], "shelf_origins": {}}
+
+    def tearDown(self):
+        self.folder.__exit__()
+        self.root.cleanup()
+
+    def make(self, folder, name, text="x"):
+        path = os.path.join(folder, name)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_storing_moves_the_file_and_remembers_where_it_was(self):
+        path = self.make(self.home, "report.pdf", "contents")
+        self.assertEqual(shelf.store(self.values, [path]), (1, []))
+        self.assertFalse(os.path.exists(path))                              # it really left
+        stored = self.values["shelf"][0]
+        self.assertTrue(stored.startswith(shelf.FOLDER))
+        self.assertEqual(os.path.basename(stored), "report.pdf")
+        with open(stored) as f:
+            self.assertEqual(f.read(), "contents")
+        self.assertEqual(self.values["shelf_origins"][stored], self.home)
+
+    def test_same_name_twice_does_not_clash(self):
+        a = self.make(self.home, "notes.txt", "one")
+        b = self.make(self.other, "notes.txt", "two")
+        self.assertEqual(shelf.store(self.values, [a, b])[0], 2)
+        texts = []
+        for stored in self.values["shelf"]:
+            with open(stored) as f:
+                texts.append(f.read())
+        self.assertEqual(sorted(texts), ["one", "two"])
+
+    def test_missing_files_and_shelf_items_are_not_stored(self):
+        path = self.make(self.home, "a.txt")
+        shelf.store(self.values, [path])
+        stored = self.values["shelf"][0]
+        done, failed = shelf.store(self.values, [stored, os.path.join(self.home, "nope"), shelf.FOLDER])
+        self.assertEqual(done, 0)
+        self.assertEqual([name for name, _ in failed], ["nope"])
+        self.assertEqual(self.values["shelf"], [stored])
+
+    def test_folders_can_be_stored_too(self):
+        folder = os.path.join(self.home, "project")
+        os.makedirs(folder)
+        self.make(folder, "main.py")
+        self.assertEqual(shelf.store(self.values, [folder])[0], 1)
+        self.assertTrue(os.path.exists(os.path.join(self.values["shelf"][0], "main.py")))
+
+    def test_put_back_returns_it_without_overwriting(self):
+        path = self.make(self.home, "report.pdf", "mine")
+        shelf.store(self.values, [path])
+        self.make(self.home, "report.pdf", "newer")                         # something took its old name
+        back = shelf.put_back(self.values, self.values["shelf"][0])
+        self.assertEqual(back, os.path.join(self.home, "report 2.pdf"))
+        with open(back) as f:
+            self.assertEqual(f.read(), "mine")
+        with open(path) as f:
+            self.assertEqual(f.read(), "newer")                             # untouched
+        self.assertEqual((self.values["shelf"], self.values["shelf_origins"]), ([], {}))
+        self.assertEqual(os.listdir(shelf.FOLDER), [])                      # its holder folder is gone too
+
+    def test_put_back_all(self):
+        paths = [self.make(self.home, "a.txt"), self.make(self.other, "b.txt")]
+        shelf.store(self.values, paths)
+        self.assertEqual(shelf.put_back_all(self.values), (2, 0))
+        self.assertTrue(all(os.path.exists(p) for p in paths))
+        self.assertEqual(self.values["shelf"], [])
+
+    def test_put_back_goes_somewhere_safe_when_the_old_folder_is_gone(self):
+        gone = os.path.join(self.home, "temp")
+        os.makedirs(gone)
+        shelf.store(self.values, [self.make(gone, "a.txt")])
+        os.rmdir(gone)
+        desktop = os.path.join(self.home, "Desktop")
+        os.makedirs(desktop)
+        with Stub(shelf.os.path, "expanduser", lambda p: p.replace("~", self.home)):
+            back = shelf.put_back(self.values, self.values["shelf"][0])
+        self.assertEqual(back, os.path.join(desktop, "a.txt"))
+
+    def test_an_item_dragged_out_is_forgotten(self):
+        shelf.store(self.values, [self.make(self.home, "a.txt"), self.make(self.home, "b.txt")])
+        first = self.values["shelf"][0]
+        os.rename(first, os.path.join(self.other, "a.txt"))                 # as Finder does on a drop
+        self.assertTrue(shelf.prune(self.values))
+        self.assertEqual(len(self.values["shelf"]), 1)
+        self.assertNotIn(first, self.values["shelf_origins"])
+        self.assertFalse(shelf.prune(self.values))
+
+    def test_old_reference_entries_are_only_forgotten(self):
+        path = self.make(self.home, "kept.txt")
+        self.values["shelf"].append(path)                                   # from a version that did not move files
+        self.assertEqual(shelf.put_back(self.values, path), path)
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(self.values["shelf"], [])
+
+    def test_free_name(self):
+        self.make(self.home, "a.txt")
+        self.make(self.home, "a 2.txt")
+        self.assertEqual(shelf._free_name(self.home, "a.txt"), os.path.join(self.home, "a 3.txt"))
+        self.assertEqual(shelf._free_name(self.home, "new.txt"), os.path.join(self.home, "new.txt"))
 
 
 class SmallThingsTests(unittest.TestCase):
