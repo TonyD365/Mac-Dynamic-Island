@@ -202,8 +202,117 @@ _SCRIPT = '''tell application "%s"
 end tell'''
 
 
+# What macOS itself lists as "Now Playing" (any app: browsers, music and video players). The
+# framework refuses ordinary apps, so the question is put through osascript, which it accepts.
+# Undocumented; if it ever stops answering, now_playing() falls back to asking the players.
+_MEDIA_REMOTE = '''ObjC.import("Foundation");
+  $.NSBundle.bundleWithPath("/System/Library/PrivateFrameworks/MediaRemote.framework/").load;'''
+
+_SYSTEM_SCRIPT = '''function run() {
+  %s
+  const Req = $.NSClassFromString("MRNowPlayingRequest");
+  const out = {now: Date.now() / 1000};
+  try {
+    const client = Req.localNowPlayingPlayerPath.client;
+    out.app = ObjC.unwrap(client.displayName);
+    out.bundle = ObjC.unwrap(client.bundleIdentifier);
+  } catch (e) {}
+  try {
+    const info = Req.localNowPlayingItem.nowPlayingInfo;
+    const get = key => ObjC.unwrap(info.valueForKey("kMRMediaRemoteNowPlayingInfo" + key));
+    out.title = get("Title");
+    out.artist = get("Artist");
+    out.rate = get("PlaybackRate");
+    out.elapsed = get("ElapsedTime");
+    out.duration = get("Duration");
+    const stamp = get("Timestamp");
+    out.stamp = stamp ? stamp.getTime() / 1000 : null;
+  } catch (e) {}
+  return JSON.stringify(out);
+}''' % _MEDIA_REMOTE
+
+# The helper has to stay alive for a moment after the call, or the request never leaves it.
+_COMMAND_SCRIPT = '''function run(argv) {
+  %s
+  if (argv[0] == "seek") {
+    ObjC.bindFunction("MRMediaRemoteSetElapsedTime", ["void", ["double"]]);
+    $.MRMediaRemoteSetElapsedTime(parseFloat(argv[1]));
+  } else {
+    ObjC.bindFunction("MRMediaRemoteSendCommand", ["bool", ["unsigned int", "id"]]);
+    $.MRMediaRemoteSendCommand(parseInt(argv[1]), $.NSDictionary.dictionary);
+  }
+  $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.4));
+}''' % _MEDIA_REMOTE
+
+SYSTEM = "system"            # value of 'control' for items driven through the system-wide interface
+_SYSTEM_COMMANDS = {"playpause": 2, "next track": 4, "previous track": 5}
+STALE_PAUSE = 300            # a paused item nobody has touched for this long is dropped
+
+
+def system_now_playing():
+    """The system-wide Now Playing item, or None if there is none (or macOS won't say)."""
+    out = subprocess.run(["osascript", "-l", "JavaScript", "-e", _SYSTEM_SCRIPT], capture_output=True,
+                         encoding="utf-8", errors="replace", timeout=10).stdout
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return None
+    title = data.get("title")
+    if not title:
+        return None
+    number = lambda key: float(data[key]) if isinstance(data.get(key), (int, float)) else 0.0
+    rate, stamp, now = number("rate"), number("stamp"), number("now")
+    position = number("elapsed") + (max(0.0, now - stamp) * rate if stamp else 0.0)
+    return {"app": data.get("app") or "", "control": SYSTEM, "playing": rate > 0, "rate": rate,
+            "title": str(title), "artist": str(data.get("artist") or ""),
+            "position": position, "duration": number("duration"), "at": time.time(),
+            "idle": (now - stamp) if (stamp and rate == 0) else 0.0}
+
+
 def now_playing():
-    """Return {'app', 'playing', 'title', 'artist'} or None. Never launches a player."""
+    """Return what is playing, or None. Never launches a player.
+
+    Keys: app, control (how to send commands: SYSTEM, a player's name, or None), playing, title,
+    artist; and for system items rate, position and duration in seconds, and 'at' (when it was read).
+    """
+    try:
+        current = system_now_playing()
+    except Exception:
+        current = None
+    if current is not None:
+        return None if current["idle"] > STALE_PAUSE else current
+    return players_now_playing()
+
+
+def position_now(item):
+    """Where playback is at this moment, extrapolated from the last reading."""
+    if not item or not item.get("duration"):
+        return 0.0
+    position = item.get("position", 0.0)
+    if item.get("playing"):
+        position += (time.time() - item.get("at", time.time())) * item.get("rate", 1.0)
+    return max(0.0, min(item["duration"], position))
+
+
+def _media_remote(*args):
+    subprocess.Popen(["osascript", "-l", "JavaScript", "-e", _COMMAND_SCRIPT, *[str(a) for a in args]],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def media_command(item, command):
+    """Send 'playpause', 'next track' or 'previous track' to whatever is playing."""
+    if item.get("control") == SYSTEM:
+        _media_remote("command", _SYSTEM_COMMANDS[command])
+    elif item.get("control"):
+        player_command(item["control"], command)
+
+
+def media_seek(seconds):
+    _media_remote("seek", "%.2f" % seconds)
+
+
+def players_now_playing():
+    """Ask Music and Spotify directly: the fallback when the system-wide list is unavailable."""
     best = None
     for app, bundle_id in _PLAYERS:
         if not NSRunningApplication.runningApplicationsWithBundleIdentifier_(bundle_id):
@@ -215,7 +324,8 @@ def now_playing():
         parts = out.strip("\n").split("\n")
         if len(parts) < 3:
             continue
-        info = {"app": app, "playing": parts[0] == "playing", "title": parts[1], "artist": parts[2]}
+        info = {"app": app, "control": app, "playing": parts[0] == "playing", "title": parts[1],
+                "artist": parts[2]}
         if info["playing"]:
             return info
         best = best or info
@@ -234,6 +344,7 @@ class Monitors:
         self.batt = None
         self.ac = None
         self.music = None
+        self.music_hold = 0.0    # ignore readings until then: a command was just sent
         self.errors = {}         # monitor name -> last failure
         self.volume = None
         self.muted = None
@@ -248,7 +359,7 @@ class Monitors:
     def start(self):
         self._spawn(self._devices, 1.0)
         self._spawn(self._power, 4.0)
-        self._spawn(self._music, 2.0)
+        self._spawn(self._music, 1.5)
         self._spawn(self._levels, 0.12)
         self._spawn(self._bluetooth, 1.0)    # frequent: a device can drop and rejoin within a couple of seconds
         self._spawn(self._stats, 3.0)
@@ -272,7 +383,9 @@ class Monitors:
         self.batt, self.ac = battery()
 
     def _music(self):
-        self.music = now_playing()
+        reading = now_playing()
+        if time.time() >= self.music_hold:      # otherwise a stale reading would undo the UI's own update
+            self.music = reading
 
     def _levels(self):
         self.volume = volume()

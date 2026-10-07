@@ -6,6 +6,7 @@ import sys
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSMenu
 from PyObjCTools import AppHelper
 
+import monitors
 from island import Island
 
 
@@ -15,11 +16,15 @@ def dump_diagnostics(island):
     lines = ["%s = %r" % (k, getattr(mon, k)) for k in
              ("cam", "mic", "batt", "ac", "music", "volume", "muted", "brightness", "bt", "cpu", "gpu", "mem",
               "errors")]
+    try:
+        lines.append("system_now_playing = %r" % (monitors.system_now_playing(),))
+    except Exception as e:
+        lines.append("system_now_playing failed: %r" % (e,))
     lines += ["locked = %r" % island.locked, "settings = %r" % island.settings,
               "executable = %s" % sys.executable, "PATH = %s" % os.environ.get("PATH")]
     path = os.path.expanduser("~/Library/Application Support/DynamicIsland/diagnostics.txt")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:     # a packaged app has no UTF-8 locale of its own
         f.write("\n".join(lines) + "\n")
 
 

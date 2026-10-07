@@ -19,7 +19,8 @@ Click it for a ring of action buttons.
 **Live information**
 - Clock, date, battery and CPU / memory at a glance
 - Green and orange dots when an app is using the camera or microphone
-- Now playing from Music and Spotify, with playback controls
+- Now playing from any app — music players and browser videos alike — with play / pause, skip and a
+  progress bar you can drag to seek
 - Volume and brightness bar when you press the keys
 - Alerts when a Bluetooth device connects or disconnects, and when you plug in or unplug power
 - A welcome animation when you log in or unlock
@@ -60,7 +61,6 @@ macOS asks for these the first time the matching feature is used:
 
 | Permission | Used for |
 |---|---|
-| Automation (Music, Spotify) | Reading and controlling what is playing |
 | Automation (System Events) | The Dark Mode button |
 | Automation (your browser) | Website blocking during a focus mode |
 | Screen Recording | The Screenshot button |
@@ -147,8 +147,9 @@ Settings are stored in `~/Library/Application Support/DynamicIsland/settings.jso
 
 - **Unsigned.** There is no Apple Developer ID signature or notarization, hence the extra step when
   installing.
-- **Private interfaces.** Lock-screen display, reading the display brightness and the Lock Screen
-  button rely on undocumented macOS interfaces and may stop working after a system update.
+- **Private interfaces.** Lock-screen display, system-wide Now Playing, reading the display brightness
+  and the Lock Screen button rely on undocumented macOS interfaces and may stop working after a system
+  update. If Now Playing stops answering, the island falls back to asking Music and Spotify directly.
 - **Focus blocking is a nudge, not a lock.** Blocked apps are hidden, not quit. Blocked pages are
   replaced only in Safari, Chrome, Edge, Brave and Arc, about a second after they load.
   Force-quitting Dynamic Island lifts all blocking.
