@@ -1,0 +1,111 @@
+# Runs on every pull request and on pushes to main:
+#   test       the logic tests, and a check that every file compiles
+#   benchmark  (pull requests) measures the PR against its base branch and comments the comparison
+#   build      builds the universal app and installer and starts the app once
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13.3"
+
+jobs:
+  test:
+    name: Tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet pyobjc-framework-Cocoa pyobjc-framework-Quartz
+      - name: Every file compiles
+        run: .venv/bin/python -m compileall -q src tests tools packaging setup.py
+      - name: Logic tests
+        run: .venv/bin/python -m unittest discover -s tests -v
+
+  benchmark:
+    name: Benchmark
+    if: github.event_name == 'pull_request'
+    runs-on: macos-14
+    permissions:
+      contents: read
+      pull-requests: write          # to post the comparison as a comment
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet pyobjc-framework-Cocoa pyobjc-framework-Quartz
+      - name: Check out the base branch next to the PR
+        run: git worktree add "$RUNNER_TEMP/base" "origin/${{ github.base_ref }}"
+      # The PR's copy of the tool measures both trees, so the two columns are comparable.
+      - name: Measure the base branch
+        run: .venv/bin/python tools/benchmark.py --src "$RUNNER_TEMP/base/src" --json "$RUNNER_TEMP/base.json"
+      - name: Measure this PR
+        run: .venv/bin/python tools/benchmark.py --src src --json "$RUNNER_TEMP/head.json"
+      - name: Compare
+        run: |
+          .venv/bin/python tools/benchmark.py --compare "$RUNNER_TEMP/base.json" "$RUNNER_TEMP/head.json" > "$RUNNER_TEMP/benchmark.md"
+          cat "$RUNNER_TEMP/benchmark.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Pull requests from forks get a read-only token; the table is still in the job summary.
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --edit-last --create-if-none \
+            --body-file "$RUNNER_TEMP/benchmark.md" \
+          || gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/benchmark.md" \
+          || echo "::notice::Could not comment on the pull request; see the job summary for the table."
+
+  build:
+    name: Build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install universal Python
+        run: |
+          curl -fsSL -o python.pkg "https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-macos11.pkg"
+          sudo installer -pkg python.pkg -target /
+          rm python.pkg
+          PY="/Library/Frameworks/Python.framework/Versions/${PYTHON_VERSION%.*}/bin/python3"
+          "$PY" -m venv .venv
+          .venv/bin/pip install --quiet -r requirements.txt
+      - name: Build the app and installer
+        run: ./build.sh
+      - name: The built app starts and keeps running
+        run: |
+          "dist/Dynamic Island.app/Contents/MacOS/Dynamic Island" > app.log 2>&1 &
+          PID=$!
+          sleep 10
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "The app is still running after 10 seconds."
+            kill "$PID"
+          else
+            echo "::error::The built app exited on its own."
+            cat app.log
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dynamic-Island-test-build
+          path: dist/Dynamic Island.pkg
+          retention-days: 7
