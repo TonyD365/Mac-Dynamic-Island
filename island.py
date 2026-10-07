@@ -29,6 +29,8 @@ import lockscreen
 import monitors
 import screen as screen_util
 import settings
+import updater
+from version import VERSION
 
 # Size limits of the island, in points. Every state is clamped to these.
 EAR = 46.0            # width on each side of the notch in the always-visible compact state
@@ -129,6 +131,9 @@ class Island:
         self.focus_dropdown = None    # built once the island's window exists
         self.hidden_slots = ()        # ring buttons tucked away while the focus drop-down covers them
         self.last_block_toast = 0.0
+        self.updater = updater.Updater(lambda: self.settings["auto_update"])
+        self.update_seen = None       # (state, version) already announced
+        self.update_opened = None     # version whose installer has been opened
         self.menu_open = False
         self.menu_page = "main"
         self.menu_seen = 0.0
@@ -193,6 +198,7 @@ class Island:
             center.addObserverForName_object_queue_usingBlock_(name, None, None, lambda note, v=value: self.set_locked(v))
             for name, value in (("com.apple.screenIsLocked", True), ("com.apple.screenIsUnlocked", False))]
         self.welcome_soon(1.2)          # also greets when the island starts at login
+        self.updater.start()
         self._timer = NSTimer.timerWithTimeInterval_repeats_block_(0.05, True, lambda t: self.tick())
         NSRunLoop.mainRunLoop().addTimer_forMode_(self._timer, NSRunLoopCommonModes)
 
@@ -714,6 +720,8 @@ class Island:
                 item("power", "Launch at Login",
                      lambda: "On" if autostart.is_enabled() else "Off",
                      lambda: autostart.set_enabled(not autostart.is_enabled()), autostart.is_enabled),
+                toggle("arrow.down.app.fill", "Automatic Updates", "auto_update"),
+                item("arrow.triangle.2.circlepath", "Check for Updates", self.update_status, self.check_for_updates),
                 item("xmark", "Quit Dynamic Island", lambda: "Close the island completely", self.request_quit),
             ]
 
@@ -918,6 +926,54 @@ class Island:
         if m:
             monitors.player_command(m["app"], command)
 
+    # ---- updates ----
+
+    def update_status(self):
+        up = self.updater
+        if not updater.can_update():
+            return "Development build  ·  updates off"
+        return {
+            "checking": "Version %s  ·  checking…" % VERSION,
+            "available": "Version %s is available  ·  click to install" % up.latest,
+            "downloading": "Downloading version %s…" % up.latest,
+            "ready": "Version %s is ready  ·  click to install" % up.latest,
+            "failed": "Could not check  ·  click to retry",
+        }.get(up.state, "Version %s  ·  up to date" % VERSION)
+
+    def check_for_updates(self):
+        up = self.updater
+        if not updater.can_update():
+            self.toast("Development build", "Only released versions update themselves", GRAY)
+        elif up.state == "ready":
+            self.open_update()
+        elif up.state not in ("checking", "downloading"):
+            self.update_seen = None
+            up.check_now()
+
+    def open_update(self):
+        if self.updater.install():
+            self.update_opened = self.updater.latest
+            self.close_menu()
+            self.toast("Installing version %s" % self.updater.latest, "Follow the installer to finish", BLUE, 5.0)
+
+    def watch_updates(self):
+        """Announce what the updater found, and open a finished download when the moment is right."""
+        up = self.updater
+        key = (up.state, up.latest)
+        if key != self.update_seen:
+            self.update_seen = key
+            if up.state == "downloading" or (up.state == "available" and not up.manual):
+                self.toast("Update available", "Version %s  ·  %s" % (
+                    up.latest, "downloading" if up.state == "downloading" else "install it from Settings"), BLUE, 4.0)
+            elif up.state == "current" and up.manual:
+                self.toast("You're up to date", "Version %s" % VERSION, GREEN)
+            elif up.state == "failed" and up.manual:
+                self.toast("Update check failed", (up.error or "Try again later")[:60], ORANGE, 4.0)
+        # Never interrupt a focus session or pop an installer up on the lock screen.
+        if (up.state == "ready" and self.update_opened != up.latest and not self.locked and not self.pomo_end
+                and (up.manual or self.settings["auto_update"])):
+            self.open_update()
+
     # ---- focus sessions ----
 
     def show_focus_dropdown(self):
@@ -1021,6 +1077,8 @@ class Island:
 
         self.check_levels(now)
         self.ticks += 1
+        if self.ticks % 20 == 0:
+            self.watch_updates()
         if self.pomo_end and self.ticks % 6 == 0:
             self.guard.check_apps()
             blocked = self.guard.blocked

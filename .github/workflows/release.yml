@@ -1,0 +1,78 @@
+# Publishing a GitHub release whose tag is "v" + a version number (v1.2.3) builds the universal
+# installer for that version and attaches it to the release. The app's updater looks for exactly
+# these files on the release marked "Latest".
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:        # manual run: builds a 0.0.0 test package as a workflow artifact
+
+permissions:
+  contents: write           # to attach files to the release
+
+env:
+  PYTHON_VERSION: "3.13.3"
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version from the tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            if ! [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
+              echo "::error::Release tag '$TAG' must be 'v' followed by a version number, e.g. v1.2.3"
+              exit 1
+            fi
+            VERSION="${TAG#v}"
+            printf '"""Set by the release workflow from tag %s."""\nVERSION = "%s"\n' "$TAG" "$VERSION" > version.py
+          else
+            VERSION="0.0.0"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          cat version.py
+
+      # The python.org installer is a universal2 build, which is what makes the app run natively
+      # on both Apple silicon and Intel.
+      - name: Install universal Python
+        run: |
+          curl -fsSL -o python.pkg "https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-macos11.pkg"
+          sudo installer -pkg python.pkg -target /
+          rm python.pkg
+          PY="/Library/Frameworks/Python.framework/Versions/${PYTHON_VERSION%.*}/bin/python3"
+          lipo -archs "$PY"
+          "$PY" -m venv .venv
+          .venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Build the app and installer
+        run: ./build.sh
+
+      - name: Name the files
+        id: files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG="Dynamic-Island-${VERSION}.pkg"
+          mv "dist/Dynamic Island.pkg" "dist/$PKG"
+          (cd dist && shasum -a 256 "$PKG" > "$PKG.sha256")
+          cat "dist/$PKG.sha256"
+          echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "dist/${{ steps.files.outputs.pkg }}" "dist/${{ steps.files.outputs.pkg }}.sha256" --clobber
+
+      - name: Keep as a workflow artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.files.outputs.pkg }}
+          path: dist/${{ steps.files.outputs.pkg }}*

@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 rm -rf build dist
+VERSION=$(.venv/bin/python -c "import version; print(version.VERSION)")
+echo "Building version $VERSION"
 .venv/bin/python setup.py py2app > build.log 2>&1 || { tail -30 build.log; exit 1; }
 
 APP="dist/Dynamic Island.app"
@@ -31,6 +33,8 @@ pkgbuild --analyze --root build/pkgroot build/component.plist > /dev/null
   || /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" build/component.plist
 /usr/libexec/PlistBuddy -c "Set :0:BundleIsVersionChecked false" build/component.plist
 
+# The scripts quit a running copy before installing and start the new one afterwards.
 pkgbuild --root build/pkgroot --component-plist build/component.plist --install-location /Applications \
-         --identifier com.dynamicisland.app --version 1.0.0 "dist/Dynamic Island.pkg"
+         --scripts packaging/scripts --identifier com.dynamicisland.app --version "$VERSION" \
+         "dist/Dynamic Island.pkg"
 echo "Built: dist/Dynamic Island.pkg"

@@ -1,0 +1,4 @@
+#!/bin/bash
+# Runs before the files are copied: quit a running copy so the app can be replaced cleanly.
+pkill -f "/Applications/Dynamic Island.app/Contents/MacOS/" 2>/dev/null
+exit 0

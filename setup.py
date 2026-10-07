@@ -1,7 +1,7 @@
 """Build the universal (arm64 + x86_64) app:  .venv/bin/python setup.py py2app"""
 from setuptools import setup
 
-VERSION = "1.0.0"
+from version import VERSION
 
 setup(
     name="Dynamic Island",

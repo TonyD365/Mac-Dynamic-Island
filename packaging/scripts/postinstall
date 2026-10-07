@@ -1,0 +1,8 @@
+#!/bin/bash
+# Runs after the files are copied: start the island again for whoever is logged in.
+user=$(stat -f%Su /dev/console 2>/dev/null)
+if [ -n "$user" ] && [ "$user" != "root" ] && [ "$user" != "loginwindow" ]; then
+  uid=$(id -u "$user")
+  launchctl asuser "$uid" sudo -u "$user" open "/Applications/Dynamic Island.app" 2>/dev/null
+fi
+exit 0

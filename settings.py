@@ -22,6 +22,7 @@ DEFAULTS = {
     "background_dim": 0.45,
     "lockscreen": True,     # stay visible on the lock screen
     "welcome": True,        # greeting animation after logging in / unlocking
+    "auto_update": True,    # download and open new releases without being asked
     "focus_modes": [],      # filled with focus.DEFAULT_MODES on first run; edited in the Focus Modes window
     "custom_buttons": [],   # [{"name", "icon", "kind", "target"}], edited in the Custom Buttons window
 }
