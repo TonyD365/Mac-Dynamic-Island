@@ -92,7 +92,7 @@ using them.
 
 ## Updates
 
-A released app checks this repository for the release marked **Latest**. When it carries a higher
+A released app checks this repository once an hour for the release marked **Latest**. When it carries a higher
 version number, the app tells you, downloads the installer, verifies its SHA-256 checksum and opens
 it. The installer quits the old copy and starts the new one.
 
