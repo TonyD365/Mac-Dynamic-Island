@@ -190,6 +190,8 @@ class Island:
         self.levels = None        # last seen (volume, muted, brightness)
         self.hud = None           # ("volume" | "brightness", visible-until time)
         self.prev_bt = None
+        self.power_quiet_until = 0.0   # no brightness bar until then: the power source has just changed
+        self.power_checked = 0.0       # when the power source was last read on the spot
         self.scroll_acc = 0.0
         self.last_rotate = 0.0
         self.on_island = False    # pointer is over the island itself
@@ -1260,10 +1262,39 @@ class Island:
             kind = "volume"
         elif changed(new[2], old[2], 0.03):     # ignores the slow drift of auto-brightness
             kind = "brightness"
+        if kind == "brightness" and self.power_just_changed(now):
+            return                              # macOS adjusting for the charger: the power alert says it all
         if kind:
             self.hud = (kind, now + 1.6)
             self.peek_until = max(self.peek_until, now + 1.6)
             self.refresh(now)
+
+    def power_just_changed(self, now):
+        """Is this brightness change macOS reacting to the charger being plugged in or pulled out?
+
+        macOS changes the brightness the instant the power source changes, which is sooner than the
+        regular battery reading notices. So when the brightness moves, the power source is read on
+        the spot; if it has changed, the brightness bar stays away for a few seconds (macOS fades
+        the brightness over a moment) and the power alert is shown instead.
+        """
+        if now < self.power_quiet_until:
+            return True
+        if now - self.power_checked < 1.0:      # one reading covers a whole run of brightness steps
+            return False
+        self.power_checked = now
+        raw = self.monitors
+        level, on_ac = monitors.battery()
+        if on_ac is None or raw.ac is None or on_ac == raw.ac:
+            return False
+        raw.batt, raw.ac = level, on_ac          # refresh() sees the change and raises the power alert
+        self.quiet_brightness(now)
+        self.refresh(now)
+        return True
+
+    def quiet_brightness(self, now):
+        self.power_quiet_until = now + 4.0
+        if self.hud and self.hud[0] == "brightness":
+            self.hud = None                      # a bar that slipped in just before
 
     def sleep_display(self):
         self.close_menu()
@@ -1550,8 +1581,10 @@ class Island:
                 self.toast("Microphone in use" if mon.mic else "Microphone off",
                            "An app is listening" if mon.mic else "No app is using it",
                            ORANGE if mon.mic else GRAY, 2.5)
-            elif p_ac is not None and mon.ac != p_ac and S["power"]:
-                self.toast("Charging" if mon.ac else "On battery", "%d%% charged" % mon.batt, YELLOW)
+            elif p_ac is not None and mon.ac != p_ac:
+                self.quiet_brightness(now)      # the brightness is about to change by itself; not news
+                if S["power"]:
+                    self.toast("Charging" if mon.ac else "On battery", "%d%% charged" % mon.batt, YELLOW)
             elif track and track != p_track:
                 self.toast(track[0], track[1] or music["app"], PINK)
         self.prev = snap
