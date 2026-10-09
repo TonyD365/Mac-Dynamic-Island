@@ -1755,7 +1755,11 @@ class Island:
                 self.toast("Storage is almost full", "%s left on this Mac" % monitors.size_text(raw.disk_free),
                            ORANGE, 6.0)
             hot = raw.thermal >= 2
-            if hot and not self.was_hot:
+            if hot and not self.was_hot and not self.menu_open and not self.tour.active:
+                self.show_note({"app": "System", "title": "This Mac is running hot", "body": raw.thermal_text}, now)
+                self.note["until"] = now + 9.0
+                self.pulse(RED)
+            elif hot and not self.was_hot:
                 self.toast("This Mac is running hot", "macOS is slowing it down", RED, 6.0)
             self.was_hot = hot
         self.auto_focus(now)
@@ -1901,6 +1905,9 @@ class Island:
             title = event["title"]
             sub = calendar_events.describe(event, now, lambda t: time.strftime(
                 "%H:%M" if S["clock24"] else "%-I:%M %p", time.localtime(t)))
+        elif S["health"] and raw.thermal >= 2:      # for as long as macOS keeps throttling
+            title = "Running hot"
+            sub = "Slowed down  ·  heat level %s" % monitors.THERMAL_NAMES[min(raw.thermal, 3)].lower()
         else:
             title = _greeting()
             if S["stats"] and raw.net is not None and int(now / 4) % 2:    # takes turns with the line below

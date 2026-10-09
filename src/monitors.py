@@ -181,6 +181,41 @@ def thermal_state():
     return int(fake) if fake else int(NSProcessInfo.processInfo().thermalState())
 
 
+THERMAL_NAMES = ("Normal", "Fair", "Serious", "Critical")
+
+
+def parse_therm(text):
+    """The CPU speed limit in percent from `pmset -g therm`, where macOS reports one (Intel Macs)."""
+    found = re.search(r"CPU_Speed_Limit\s*=\s*(\d+)", text)
+    return int(found.group(1)) if found else None
+
+
+def parse_busiest(text):
+    """(name, percent of one core) of the first process listed by `ps -Aceo pcpu=,comm= -r`."""
+    for line in text.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            try:
+                return parts[1].strip(), float(parts[0])
+            except ValueError:
+                pass
+    return None
+
+
+def thermal_detail(state):
+    """A sentence or two on how macOS is holding the Mac back, and what is working it hardest."""
+    run = lambda *command: subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace",
+                                          timeout=3).stdout
+    parts = ["Heat level: %s. macOS is slowing this Mac down to cool off." % THERMAL_NAMES[max(0, min(state, 3))]]
+    limit = parse_therm(run("pmset", "-g", "therm"))
+    if limit is not None and limit < 100:
+        parts.append("CPU held to %d%% of full speed." % limit)
+    busiest = parse_busiest(run("ps", "-Aceo", "pcpu=,comm=", "-r"))
+    if busiest:
+        parts.append("Busiest: %s (%d%% CPU)." % (busiest[0], round(busiest[1])))
+    return " ".join(parts)
+
+
 def volume():
     return _output_prop(_VOLUME, ctypes.c_float)
 
@@ -561,6 +596,7 @@ class Monitors:
         self._noticed = None     # ids of the banners seen on the last look
         self.disk_free = None    # bytes
         self.thermal = 0
+        self.thermal_text = ""   # details, while macOS is throttling
         self.downloads_on = False    # set by the island from the Download Progress setting
         self.download = None     # {"title", "bytes", "total", "speed", "count"} while a browser is downloading
         self.downloads_done = [] # names of downloads that have just finished, for the island to announce
@@ -579,7 +615,7 @@ class Monitors:
         self._spawn(self._bluetooth, 1.0)    # frequent: a device can drop and rejoin within a couple of seconds
         self._spawn(self._downloads, 1.0)
         self._spawn(self._notifications, 1.0)
-        self._spawn(self._health, 30.0)
+        self._spawn(self._health, 15.0)
         self._spawn(self._stats, 3.0)
         self._spawn(self._calendar, 30.0)
 
@@ -634,7 +670,9 @@ class Monitors:
 
     def _health(self):
         self.disk_free = disk_free()
-        self.thermal = thermal_state()
+        state = thermal_state()
+        self.thermal_text = thermal_detail(state) if state >= 2 else ""
+        self.thermal = state
 
     def _downloads(self):
         if not self.downloads_on:

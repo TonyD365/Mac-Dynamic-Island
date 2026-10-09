@@ -206,6 +206,13 @@ class NewFeatureTests(unittest.TestCase):
                          "https://teams.microsoft.com/l/meetup-join/19%3a")
         self.assertIsNone(link("https://example.com/agenda", "Room 4", None))
 
+    def test_throttling_details_are_read(self):
+        self.assertEqual(monitors.parse_therm("CPU_Scheduler_Limit = 100\n\tCPU_Speed_Limit \t= 62\n"), 62)
+        self.assertIsNone(monitors.parse_therm("Note: No thermal warning level has been recorded"))
+        self.assertEqual(monitors.parse_busiest(" 181.5 Google Chrome Helper\n  3.0 Finder\n"),
+                         ("Google Chrome Helper", 181.5))
+        self.assertIsNone(monitors.parse_busiest(""))
+
     def test_times_of_day_are_tidied(self):
         self.assertEqual([focus.clean_time(t) for t in ("9:5", "09.30", "0905", "930", " 23:59 ")],
                          ["09:05", "09:30", "09:05", "09:30", "23:59"])
