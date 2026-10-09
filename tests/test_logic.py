@@ -223,6 +223,17 @@ class NewFeatureTests(unittest.TestCase):
         self.assertEqual(hud_keys.stepped(1.0, 1), 1.0)
         self.assertEqual(hud_keys.stepped(0.5, 1, fine=True), 0.515625)
 
+    def test_battery_colours(self):
+        look = monitors.battery_look
+        self.assertEqual(look(55, False, True), "yellow")       # Low Power Mode wins
+        self.assertEqual(look(100, True, True), "yellow")
+        self.assertEqual(look(100, True, False), "green")
+        self.assertEqual(look(100, False, False), "green")
+        self.assertEqual(look(60, True, False), "white")        # charging, not yet full
+        self.assertEqual(look(15, True, False), "white")
+        self.assertEqual(look(15, False, False), "red")
+        self.assertEqual(look(60, False, False), "white")
+
     def test_times_of_day_are_tidied(self):
         self.assertEqual([focus.clean_time(t) for t in ("9:5", "09.30", "0905", "930", " 23:59 ")],
                          ["09:05", "09:30", "09:05", "09:30", "23:59"])

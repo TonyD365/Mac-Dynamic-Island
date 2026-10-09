@@ -489,6 +489,7 @@ class Island:
         self.batt_fill.setPosition_((rx - 10.5, mid))
         for l in (shell, nub, self.batt_fill):
             self.batt_glyph.addSublayer_(l)
+        self.batt_bolt = self.bolt_layer(self.batt_glyph, rx - 1, mid, 7.5)     # on top while charging
 
         # Tour controls, either side of the notch while the tour runs: Skip on the left, Next on the right.
         self.tour_skip = self.text_layer(self.island, lx - EAR / 2, mid, EAR, 10.5, GRAY, "center")
@@ -670,6 +671,7 @@ class Island:
         self.ring.setStrokeEnd_(0)
         self.ring_text = self.text_layer(self.detail, ring_x - ring_r, ring_y, 2 * ring_r, 9.5, WHITE, "center",
                                          NSFontWeightBold, rounded=True)
+        self.ring_bolt = self.bolt_layer(self.detail, ring_x + ring_r * 0.8, ring_y + ring_r * 0.8, 8.0)
 
         self.sweep_band = CAGradientLayer.layer()
         self.sweep_band.setBounds_(NSMakeRect(0, 0, 110, self.exp_h))
@@ -714,6 +716,17 @@ class Island:
         t.setFrame_(NSMakeRect(x, y_center - h / 2, width, h))
         parent.addSublayer_(t)
         return t
+
+    def bolt_layer(self, parent, x, y, size):
+        """The charging bolt: white, with a dark edge so it shows on a white or a green battery too."""
+        bolt = self.symbol_layer(parent, x, y)
+        self.set_symbol(bolt, "bolt.fill", WHITE, size)
+        bolt.setShadowColor_(BLACK.CGColor())
+        bolt.setShadowOpacity_(1.0)
+        bolt.setShadowRadius_(1.2)
+        bolt.setShadowOffset_((0, 0))
+        bolt.setOpacity_(0)
+        return bolt
 
     def symbol_layer(self, parent, x, y):
         l = CALayer.layer()
@@ -1840,7 +1853,10 @@ class Island:
         self.bars.setOpacity_(1 if show_bars else 0)
         self.batt_glyph.setOpacity_(0 if (ear_str or show_bars or mon.batt is None) else 1)
         level = (mon.batt or 0) / 100.0
-        batt_color = GREEN if mon.ac else (RED if level <= 0.2 else WHITE)
+        batt_color = {"yellow": YELLOW, "green": GREEN, "red": RED, "white": WHITE}[
+            monitors.battery_look(mon.batt, mon.ac, raw.low_power)]
+        for bolt in (self.batt_bolt, self.ring_bolt):
+            bolt.setOpacity_(1 if (mon.ac and mon.batt is not None) else 0)
         self.batt_fill.setBounds_(NSMakeRect(0, 0, max(2.0, 19 * level), 7))
         self.batt_fill.setBackgroundColor_(batt_color.CGColor())
 
