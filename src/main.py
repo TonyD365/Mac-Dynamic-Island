@@ -15,7 +15,7 @@ def dump_diagnostics(island):
     mon = island.monitors
     lines = ["%s = %r" % (k, getattr(mon, k)) for k in
              ("cam", "mic", "batt", "ac", "music", "volume", "muted", "brightness", "bt", "cpu", "gpu", "mem",
-              "errors")]
+              "net", "download", "errors")]
     try:
         lines.append("system_now_playing = %r" % (monitors.system_now_playing(),))
     except Exception as e:

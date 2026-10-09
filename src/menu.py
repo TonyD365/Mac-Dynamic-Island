@@ -255,6 +255,7 @@ def settings_entries(island):
             toggle("music.note", "Now Playing", "music"),
             toggle("bolt.fill", "Power Alerts", "power"),
             toggle("headphones", "Bluetooth Alerts", "bluetooth"),
+            toggle("arrow.down.circle.fill", "Download Progress", "downloads"),
             toggle("slider.horizontal.3", "Volume & Brightness Bar", "hud"),
             toggle("hand.wave.fill", "Welcome Animation", "welcome"),
             entry("set:calendar", "calendar", "Calendar Events", island.calendar_status, island.toggle_calendar,

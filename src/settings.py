@@ -17,6 +17,7 @@ DEFAULTS = {
     "hud": True,            # volume and brightness bar
     "scroll_volume": True,  # scroll on the island to change the volume
     "stats": True,          # CPU / memory line when nothing else is going on
+    "downloads": True,      # progress of browser downloads (reads the Downloads folder)
     "background": "",       # "", a preset name, or "custom"
     "background_custom": "",
     "background_dim": 0.45,

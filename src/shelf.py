@@ -108,10 +108,11 @@ def put_back(values, stored):
     return target
 
 
-def put_back_all(values):
-    """Put everything back. Returns (number returned, number that could not be moved and stay on the Shelf)."""
+def put_back_all(values, only=None):
+    """Put everything back, or just the items in `only`. Returns (number returned, number that could
+    not be moved and stay on the Shelf)."""
     done = stuck = 0
-    for stored in list(values["shelf"]):
+    for stored in list(values["shelf"] if only is None else only):
         try:
             if put_back(values, stored) is not None:
                 done += 1
