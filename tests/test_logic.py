@@ -19,7 +19,9 @@ import focus                # noqa: E402
 import menu                 # noqa: E402
 import ring                 # noqa: E402
 import shelf                # noqa: E402
+import hud_keys             # noqa: E402
 import monitors             # noqa: E402
+import notifications        # noqa: E402
 import screen               # noqa: E402
 import settings             # noqa: E402
 import updater              # noqa: E402
@@ -193,6 +195,73 @@ class SettingsTests(unittest.TestCase):
                 values["custom_buttons"] = [{"name": "打开邮箱", "icon": "star.fill", "kind": "url", "target": "x.com"}]
                 settings.save(values)
                 self.assertEqual(settings.load()["custom_buttons"][0]["name"], "打开邮箱")
+
+
+class NewFeatureTests(unittest.TestCase):
+    def test_meeting_links_are_found_in_any_field(self):
+        link = calendar_events.meeting_link
+        self.assertEqual(link("", "Room 4", "Join: https://us02web.zoom.us/j/123456?pwd=abc."),
+                         "https://us02web.zoom.us/j/123456?pwd=abc")
+        self.assertEqual(link("https://meet.google.com/abc-defg-hij"), "https://meet.google.com/abc-defg-hij")
+        self.assertEqual(link("", "<https://teams.microsoft.com/l/meetup-join/19%3a>"),
+                         "https://teams.microsoft.com/l/meetup-join/19%3a")
+        self.assertIsNone(link("https://example.com/agenda", "Room 4", None))
+
+    def test_throttling_details_are_read(self):
+        self.assertEqual(monitors.parse_therm("CPU_Scheduler_Limit = 100\n\tCPU_Speed_Limit \t= 62\n"), 62)
+        self.assertIsNone(monitors.parse_therm("Note: No thermal warning level has been recorded"))
+        self.assertEqual(monitors.parse_busiest(" 181.5 Google Chrome Helper\n  3.0 Finder\n"),
+                         ("Google Chrome Helper", 181.5))
+        self.assertIsNone(monitors.parse_busiest(""))
+
+    def test_media_keys_are_decoded_and_stepped(self):
+        self.assertEqual(hud_keys.decode((hud_keys.SOUND_UP << 16) | 0xA00), (hud_keys.SOUND_UP, True))
+        self.assertEqual(hud_keys.decode((hud_keys.MUTE << 16) | 0xB00), (hud_keys.MUTE, False))
+        self.assertEqual(hud_keys.stepped(0.375, 1), 0.4375)
+        self.assertEqual(hud_keys.stepped(0.40, 1), 0.4375)          # off the marks: lands on the next one
+        self.assertEqual(hud_keys.stepped(0.03, -1), 0.0)
+        self.assertEqual(hud_keys.stepped(1.0, 1), 1.0)
+        self.assertEqual(hud_keys.stepped(0.5, 1, fine=True), 0.515625)
+
+    def test_times_of_day_are_tidied(self):
+        self.assertEqual([focus.clean_time(t) for t in ("9:5", "09.30", "0905", "930", " 23:59 ")],
+                         ["09:05", "09:30", "09:05", "09:30", "23:59"])
+        self.assertEqual([focus.clean_time(t) for t in ("", "9", "24:00", "12:60", "soon", "1:2:3")], [""] * 6)
+
+    def test_focus_modes_start_by_time_or_app(self):
+        modes = [{"name": "A", "auto_at": "09:00"}, {"name": "B", "auto_app": "Xcode"}, {"name": "C"}]
+        self.assertEqual(focus.due(modes, "09:00")["name"], "A")
+        self.assertEqual(focus.due(modes, "", {"xcode", "finder"})["name"], "B")
+        self.assertIsNone(focus.due(modes, "09:01", {"finder", ""}))
+
+    def test_a_banner_is_read_into_title_and_body(self):
+        read = notifications.parse
+        self.assertEqual(read("Messages, Sam, see you at 5", {"title": "Sam", "body": "see you at 5"}),
+                         {"app": "Messages", "title": "Sam", "body": "see you at 5"})
+        self.assertEqual(read("Mail, Hi, Re: plan, ok", {"title": "Hi", "subtitle": "Re: plan", "body": "ok"})["body"],
+                         "Re: plan  ·  ok")
+        self.assertEqual(read("Reminders", {}), {"app": "Reminders", "title": "Reminders", "body": ""})
+
+    def test_only_new_banners_are_announced(self):
+        one = {"a": {"app": "Mail", "title": "t", "body": ""}}
+        self.assertEqual(notifications.fresh(one, None), [])            # the first look only takes stock
+        self.assertEqual(notifications.fresh(one, set()), [one["a"]])
+        self.assertEqual(notifications.fresh(one, {"a"}), [])
+        own = {"b": {"app": notifications.OWN_NAME, "title": "t", "body": ""}}
+        self.assertEqual(notifications.fresh(own, set()), [])
+        many = {str(i): one["a"] for i in range(notifications.BURST + 1)}
+        self.assertEqual(notifications.fresh(many, set()), [])          # the list was opened: not news
+
+    def test_dragged_text_is_kept_as_a_file(self):
+        with tempfile.TemporaryDirectory() as folder, Stub(shelf, "FOLDER", folder):
+            values = {"shelf": [], "shelf_origins": {}}
+            self.assertEqual(shelf.store_loose(values, ("text", "héllo"), now=0), (1, []))
+            path = values["shelf"][0]
+            self.assertTrue(os.path.basename(path).startswith("Text ") and path.endswith(".txt"))
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "héllo")
+            self.assertEqual(shelf.store_loose(values, ("image", b"\x89PNG"), now=0), (1, []))
+            self.assertTrue(values["shelf"][1].endswith(".png"))
 
 
 class MonitorTests(unittest.TestCase):

@@ -18,7 +18,7 @@ import settings
 # The built-in buttons and the category each one starts in.
 DEFAULT_CATEGORIES = [
     {"name": "Time", "icon": "clock.fill", "items": ["focus", "timer", "stopwatch"]},
-    {"name": "Media", "icon": "play.fill", "items": ["previous", "play", "next", "mute"]},
+    {"name": "Media", "icon": "play.fill", "items": ["previous", "play", "next", "mute", "mic"]},
     {"name": "System", "icon": "switch.2", "items": ["dark", "awake", "lock", "sleep"]},
     {"name": "Tools", "icon": "wrench.and.screwdriver.fill", "items": ["screenshot", "color", "calculator"]},
     {"name": "Files", "icon": "folder.fill", "items": ["downloads", "desktop", "documents", "applications"]},
@@ -125,6 +125,7 @@ BUILTIN_LOOK = {
     "play": ("playpause.fill", "Play / Pause"),
     "next": ("forward.fill", "Next"),
     "mute": ("speaker.slash.fill", "Mute"),
+    "mic": ("mic.slash.fill", "Mute Microphone"),
     "dark": ("circle.lefthalf.filled", "Dark Mode"),
     "awake": ("cup.and.saucer.fill", "Keep Awake"),
     "lock": ("lock.fill", "Lock Screen"),
@@ -168,7 +169,8 @@ def actions(island):
                       else "Choose a focus mode",
                       island.show_focus_dropdown, lambda: bool(island.pomo_end)),
         "timer": make("timer",
-                      lambda: ("%s left  ·  click to change" % island.countdown(island.timer_end)) if island.timer_end
+                      lambda: ("%s left  ·  %d running" % (island.countdown(island.timer_end), len(island.timers)))
+                      if island.timer_end
                       else "Count down from a set time",
                       island.show_timer_dropdown, lambda: bool(island.timer_end), safe=True),
         "stopwatch": make("stopwatch",
@@ -180,6 +182,8 @@ def actions(island):
         "next": make("next", now_title, lambda: island.player("next track"), safe=True),
         "mute": make("mute", lambda: "Muted" if raw.muted else "Sound on", toggle_mute,
                      lambda: bool(raw.muted), safe=True),
+        "mic": make("mic", lambda: "Silenced for every app" if raw.mic_muted else "Microphone on",
+                    island.toggle_mic, lambda: bool(raw.mic_muted), safe=True),
         "dark": make("dark", lambda: "On" if A.is_dark() else "Off", A.toggle_dark, A.is_dark),
         "awake": make("awake", lambda: "On" if A.is_awake() else "Off", A.toggle_awake, A.is_awake, safe=True),
         "lock": make("lock", lambda: "Lock this Mac now", island.lock_screen),
@@ -256,7 +260,13 @@ def settings_entries(island):
             toggle("bolt.fill", "Power Alerts", "power"),
             toggle("headphones", "Bluetooth Alerts", "bluetooth"),
             toggle("arrow.down.circle.fill", "Download Progress", "downloads"),
+            toggle("exclamationmark.triangle.fill", "Storage & Heat Warnings", "health"),
+            entry("set:mirror", "bell.badge.fill", "Mirror Notifications", island.mirror_status,
+                  island.toggle_mirror, lambda: S["mirror"]),
+            toggle("bell.slash.fill", "Hide the System's Banners", "mirror_hide"),
             toggle("slider.horizontal.3", "Volume & Brightness Bar", "hud"),
+            entry("set:replace_hud", "rectangle.slash", "Hide the System's Volume Panel", island.hud_keys_status,
+                  island.toggle_hud_keys, lambda: S["replace_hud"]),
             toggle("hand.wave.fill", "Welcome Animation", "welcome"),
             entry("set:calendar", "calendar", "Calendar Events", island.calendar_status, island.toggle_calendar,
                   lambda: S["calendar"]),

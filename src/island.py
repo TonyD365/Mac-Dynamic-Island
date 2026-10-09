@@ -27,7 +27,12 @@ import autostart
 import backgrounds
 import categories_editor
 import custom_buttons
+import subprocess
+
 import focus
+import hud_keys
+import notifications
+from AppKit import NSApplication, NSSharingService
 import focus_editor
 import focus_panel
 import lockscreen
@@ -60,6 +65,9 @@ SHELF_W = 150.0       # the drawer that slides out on the right while the Shelf 
 SHELF_EAR = 20.0      # extra width beside the notch for the folder mark, when compact
 SHELF_ROWS = 3        # files listed in the drawer at once; scroll for the rest
 SHELF_ROW_H = 19.0
+NOTE_H = 88.0           # the panel that drops below the island to show a notification in full
+NOTE_SECONDS = 6.0
+LOW_DISK = 10e9         # warn when less than this many bytes are free
 INNER_SLOTS = 8       # buttons visible at once in each ring; more are reached by turning it
 OUTER_SLOTS = 9
 
@@ -155,7 +163,20 @@ class Island:
         self.last_block_toast = 0.0
         self.about_window = about.About(self.check_for_updates)
         self.tour = tour.Tour(self)
-        self.timer_end = None         # when the countdown timer finishes
+        self.timers = []              # countdown timers running: [{"name", "end"}]
+        self.key_tap = hud_keys.KeyTap(lambda: self.monitors.display_id)
+        self.tap_tried = 0.0          # when catching the volume keys was last attempted
+        self.note = None              # the mirrored notification on show: {app, title, body, until}
+        self.body_action = None       # what a click on the island's text does right now, if anything
+        self.joined = None            # id of the calendar event whose meeting was opened
+        self.drag_loose = None        # text or a picture in the drag now under way, when it has no files
+        self.drag_zone = "shelf"      # where the drag would land: "shelf" or "airdrop"
+        self.auto_clock = time.strftime("%H:%M")     # the minute last checked for focus modes that start by themselves
+        self.apps_open = None         # names of the running apps, on the last look
+        self.apps_checked = 0.0
+        self.disk_warned = 0.0
+        self.health_from = time.time() + 8.0      # warnings wait until the welcome has had its turn
+        self.was_hot = False
         self.stopwatch_start = None   # when the stopwatch was started
         self.drag_over = False        # files are being dragged over the island
         self.ext = 0.0                # how far the island currently reaches out to the right
@@ -256,6 +277,7 @@ class Island:
             for name, value in (("com.apple.screenIsLocked", True), ("com.apple.screenIsUnlocked", False))]
         self.monitors.calendar_on = self.settings["calendar"]
         self.monitors.downloads_on = self.settings["downloads"]
+        self.monitors.mirror_on = self.settings["mirror"]
         if self.settings["toured"]:
             self.welcome_soon(1.2)      # also greets when the island starts at login
         else:                           # first run: the tour takes the greeting's place
@@ -349,7 +371,7 @@ class Island:
         # Room for the drawer on the right, and for the buttons' spring overshoot, or the window
         # edge clips them mid-bounce. (The window is transparent and click-through, so extra width is free.)
         self.win_w = 2 * math.ceil(max(hx + GLOW_PAD, (hx + SHELF_W + outer_offset) * 1.04 + MENU_R + 10))
-        self.win_h = math.ceil(max(hy + GLOW_PAD, (hy + outer_offset) * 1.06 + MENU_R + 10))
+        self.win_h = math.ceil(max(hy + NOTE_H + GLOW_PAD, (hy + outer_offset) * 1.06 + MENU_R + 10))
         self.panel.setFrame_display_(
             NSMakeRect(self.cx - self.win_w / 2, self.top - self.win_h, self.win_w, self.win_h), True)
         self.build_layers()
@@ -534,6 +556,20 @@ class Island:
         w = self.exp_w
         left = -w / 2 + 18
         base = -self.nh
+        # The notification panel: hangs below the usual content, which stays as it is.
+        self.note_group = self.group(self.island)
+        self.note_group.setOpacity_(0)
+        nx, nw, top = -self.exp_w / 2 + 16, self.exp_w - 32, -self.exp_h
+        line = CALayer.layer()
+        line.setFrame_(NSMakeRect(nx, top - 1, nw, 1))
+        line.setBackgroundColor_(FAINT.CGColor())
+        self.note_group.addSublayer_(line)
+        self.note_app = self.text_layer(self.note_group, nx, top - 13, nw, 8.5, GRAY, "left", NSFontWeightBold)
+        self.note_title = self.text_layer(self.note_group, nx, top - 28, nw, 12, WHITE, "left")
+        self.note_body = self.text_layer(self.note_group, nx, top - 59, nw, 10.5, GRAY, "left")
+        self.note_body.setWrapped_(True)                # up to three lines, then an ellipsis
+        self.note_body.setFrame_(NSMakeRect(nx, top - NOTE_H + 8, nw, 42))
+
         self.detail = self.group(self.island)
         full = NSMakeRect(-w / 2, -self.exp_h, w, self.exp_h)
         self.bg = CALayer.layer()
@@ -569,6 +605,7 @@ class Island:
         self.sub_narrow = m_right - mx - 3 * 22 - 5  # leave room for the music controls
         self.sub_is_narrow = False
         self.sub_text = self.text_layer(self.detail, mx, base - 33, self.sub_wide, 10, GRAY, "left")
+        self.body_box = (mx, base - 42, mx + self.sub_wide, base - 6)       # the two lines of text, for clicks
         self.bar = self.group(self.detail)
         self.bar_w = self.sub_wide - 4
         track = CALayer.layer()
@@ -788,6 +825,11 @@ class Island:
             return
         x = point.x - self.win_w / 2
         y = point.y - self.win_h
+        if self.note and y < -self.exp_h:
+            note, self.note = self.note, None       # a click opens it, as on the banner, and puts it away
+            if "element" in note:
+                threading.Thread(target=notifications.open_notice, args=(note,), daemon=True).start()
+            return
         if self.tour.active:
             half = self.nh / 2
             if abs(x - self.lx) <= 24 and abs(y - self.mid) <= half:
@@ -822,6 +864,11 @@ class Island:
             if abs(x - bx) <= half and abs(y - by) <= half and enabled():
                 callback()
                 return
+        left, low, right, high = self.body_box
+        if self.body_action and not self.menu_open and left <= x <= right and low <= y <= high:
+            self.body_action()              # "click to join", "click to mute"
+            self.refresh(time.time())
+            return
         if self.menu_open:
             self.close_menu()
         else:
@@ -976,15 +1023,100 @@ class Island:
     def elapsed(self, start):
         return self.clock_text(time.time() - start) if start else ""
 
-    def start_timer(self, minutes):
-        self.timer_end = time.time() + minutes * 60
-        self.toast("Timer", "%d minute%s" % (minutes, "" if minutes == 1 else "s"), ORANGE, 2.5)
+    @property
+    def timer_end(self):
+        """When the next timer finishes; None if none is running."""
+        return min((t["end"] for t in self.timers), default=None)
+
+    def start_timer(self, minutes, name=""):
+        self.timers.append({"name": name, "end": time.time() + minutes * 60})
+        self.toast(name or "Timer", "%d minute%s" % (minutes, "" if minutes == 1 else "s"), ORANGE, 2.5)
         self.update_menu()
 
-    def cancel_timer(self):
-        self.timer_end = None
+    def cancel_timer(self, timer=None):
+        """Cancel one timer, or all of them."""
+        self.timers = [t for t in self.timers if timer is not None and t is not timer]
         self.pulse(GRAY)
         self.update_menu()
+
+    # ---- microphone, meetings, notifications ----
+
+    def toggle_mic(self):
+        raw = self.monitors
+        muted = not raw.mic_muted
+        if not monitors.set_mic_mute(muted):
+            self.toast("No microphone to mute", "", GRAY, 2.5)
+            return
+        raw.mic_muted = muted               # shown at once; the next poll confirms it
+        self.toast("Microphone muted" if muted else "Microphone on",
+                   "No app can hear you" if muted else "Apps can hear you again", ORANGE if muted else GREEN, 2.0)
+        self.update_menu()
+
+    def show_note(self, notice, now):
+        """Drop a panel below the island with the whole notification; the island itself carries on as usual."""
+        self.note = dict(notice, until=now + NOTE_SECONDS)
+        opens = "element" in notice
+        self.set_text(self.note_app, notice["app"].upper() + ("  ·  CLICK TO OPEN" if opens else ""))
+        self.set_text(self.note_title, notice["title"])
+        self.set_text(self.note_body, notice["body"])
+        self.pulse(WHITE)
+
+    def join(self, event):
+        self.joined = event["id"]
+        subprocess.Popen(["/usr/bin/open", event["link"]])
+
+    def mirror_status(self):
+        if not notifications.available():
+            return "Not available in this build"
+        if not self.settings["mirror"]:
+            return "Off"
+        return "On" if notifications.trusted() else "Waiting for Accessibility access"
+
+    def toggle_mirror(self):
+        self.settings["mirror"] = not self.settings["mirror"] and notifications.available()
+        settings.save(self.settings)
+        self.monitors.mirror_on = self.settings["mirror"]
+        if self.settings["mirror"] and not notifications.trusted():
+            notifications.trusted(prompt=True)      # macOS shows its own request, with a link to the setting
+
+    def hud_keys_status(self):
+        if not self.settings["replace_hud"]:
+            return "Off  ·  macOS shows its own panel too"
+        return "On  ·  keyboard keys only" if self.key_tap.running() else "Waiting for Accessibility access"
+
+    def toggle_hud_keys(self):
+        self.settings["replace_hud"] = not self.settings["replace_hud"]
+        settings.save(self.settings)
+        if not self.settings["replace_hud"]:
+            self.key_tap.stop()
+        elif not self.key_tap.start():
+            notifications.trusted(prompt=True)      # macOS shows its own request, with a link to the setting
+
+    def airdrop(self, paths):
+        urls = [NSURL.fileURLWithPath_(p) for p in paths if os.path.exists(p)]
+        service = NSSharingService.sharingServiceNamed_("com.apple.share.AirDrop.send")
+        if service is None or not urls or not service.canPerformWithItems_(urls):
+            self.toast("AirDrop isn't available", "Check that Wi-Fi and Bluetooth are on", ORANGE, 4.0)
+            return
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        service.performWithItems_(urls)
+
+    def auto_focus(self, now):
+        """Start a focus mode whose time has come, or whose app has just been opened."""
+        modes = self.settings["focus_modes"]
+        clock, opened = time.strftime("%H:%M", time.localtime(now)), ()
+        if clock == self.auto_clock:
+            clock = ""                      # this minute has been dealt with
+        else:
+            self.auto_clock = clock
+        if any(m.get("auto_app") for m in modes) and now - self.apps_checked >= 2.0:
+            self.apps_checked = now
+            names = {str(a.localizedName() or "").lower() for a in NSWorkspace.sharedWorkspace().runningApplications()}
+            opened = names - self.apps_open if self.apps_open is not None else ()
+            self.apps_open = names
+        mode = focus.due(modes, clock, opened) if (clock or opened) else None
+        if mode is not None and not self.pomo_end:
+            self.start_focus(mode, mode.get("minutes", 25))
 
     def toggle_stopwatch(self):
         if self.stopwatch_start:
@@ -1064,25 +1196,35 @@ class Island:
         if dragging and count != self.drag_count:           # read the pasteboard once per drag
             self.drag_count = count
             self.drag_paths = shelf.paths_from(board)
-        dragging = dragging and bool(self.drag_paths)
+            self.drag_loose = None if self.drag_paths else shelf.loose_from(board)
+        dragging = dragging and bool(self.drag_paths or self.drag_loose)
 
         # A generous target: the whole expanded island and its drawer, with some margin.
         near = (-self.exp_w / 2 - 20 <= x <= self.exp_w / 2 + SHELF_W + 20) and y >= -self.exp_h - 16
         over = dragging and near
         if over:
             self.peek_until = max(self.peek_until, now + 0.25)      # stay open while the files hover
-        if over != self.drag_over:
-            self.drag_over = over
+        # Files let go over the left of the island are sent by AirDrop; anywhere else they join the Shelf.
+        zone = "airdrop" if (self.drag_paths and x < -self.exp_w / 6) else "shelf"
+        if over != self.drag_over or (over and zone != self.drag_zone):
+            self.drag_over, self.drag_zone = over, zone
             self.refresh(now)
-        if self.button_down and not down and self.drag_paths:      # the button has just come up
+        if self.button_down and not down and (self.drag_paths or self.drag_loose):     # the button has just come up
             if near and not self.dragging_out and not self.locked and count != self.press_count:
-                self.pending_drop = (list(self.drag_paths), now)
-            self.drag_paths = []
+                self.pending_drop = (list(self.drag_paths), now, zone, self.drag_loose)
+            self.drag_paths, self.drag_loose = [], None
         self.button_down = down
         # Give macOS a moment to deliver the drop itself; if it has not, take the files anyway.
         if self.pending_drop is not None and now - self.pending_drop[1] > 0.2:
-            paths, self.pending_drop = self.pending_drop[0], None
-            self.take_files(paths)
+            (paths, _, zone, loose), self.pending_drop = self.pending_drop, None
+            if loose is not None:
+                self.drag_over = False
+                self.shelf_work(lambda: ("store", shelf.store_loose(self.settings, loose)))
+            elif zone == "airdrop":
+                self.drag_over = False
+                self.airdrop(paths)
+            else:
+                self.take_files(paths)
         return dragging
 
     def on_drag_out_ended(self, dropped):
@@ -1191,6 +1333,7 @@ class Island:
         settings.save(self.settings)
         self.monitors.calendar_on = self.settings["calendar"]
         self.monitors.downloads_on = self.settings["downloads"]
+        self.monitors.mirror_on = self.settings["mirror"]
         if self.settings["calendar"] and not calendar.authorized():
             calendar.request_access()
 
@@ -1558,15 +1701,22 @@ class Island:
         if self.ticks % 5 == 0 or self.mode is None:
             self.refresh(now)
 
-        mode = "expanded" if (hover or self.menu_open or now < self.peek_until) else "compact"
+        if self.note and (now >= self.note["until"] or self.menu_open or self.tour.active):
+            self.note = None
+        elif self.note and on_island:
+            self.note["until"] = max(self.note["until"], now + 1.5)     # stays while it is being read
+        mode = "expanded" if (hover or self.menu_open or now < self.peek_until or self.note) else "compact"
+        extra = min(NOTE_H, self.win_h - GLOW_PAD - self.exp_h) if self.note else 0.0
         drawer = self.drawer_w()
         if drawer != self.ring_ext:
             self.layout_rings(drawer)               # the rings step aside for the drawer
         ext = drawer if mode == "expanded" else (SHELF_EAR if self.settings["shelf"] else 0.0)
-        if (mode, ext) != self.shape_key:
-            self.shape_key = (mode, ext)
+        if (mode, ext, extra) != self.shape_key:
+            grew = self.shape_key is None or extra > self.shape_key[2]
+            self.shape_key = (mode, ext, extra)
+            self.note_group.setOpacity_(1 if extra else 0)
             if mode == "expanded":
-                self.set_shape(self.exp_w, self.exp_h, 20, bounce=mode != self.mode, ext=ext)
+                self.set_shape(self.exp_w, self.exp_h + extra, 20, bounce=mode != self.mode or grew, ext=ext)
             else:
                 self.set_shape(self.compact_w, self.nh, 11, bounce=False, ext=ext)
             self.mode = mode
@@ -1611,6 +1761,31 @@ class Island:
             self.prev_bt = bt
 
         raw.downloads_on = S["downloads"]
+        raw.mirror_on = S["mirror"]
+        raw.mirror_hide = S["mirror_hide"]
+        if S["replace_hud"] and not self.key_tap.running() and now - self.tap_tried > 3.0:
+            self.tap_tried = now                    # keeps trying until Accessibility access is granted
+            self.key_tap.start()
+        while raw.notices:
+            notice = raw.notices.pop(0)
+            if S["mirror"] and not self.menu_open and not self.tour.active:
+                self.show_note(notice, now)
+            elif S["mirror"]:
+                self.toast(notice["title"], notice["body"], WHITE, 4.5)
+        if S["health"] and now >= self.health_from:
+            if raw.disk_free is not None and raw.disk_free < LOW_DISK and now - self.disk_warned > 6 * 3600:
+                self.disk_warned = now
+                self.toast("Storage is almost full", "%s left on this Mac" % monitors.size_text(raw.disk_free),
+                           ORANGE, 6.0)
+            hot = raw.thermal >= 2
+            if hot and not self.was_hot and not self.menu_open and not self.tour.active:
+                self.show_note({"app": "System", "title": "This Mac is running hot", "body": raw.thermal_text}, now)
+                self.note["until"] = now + 9.0
+                self.pulse(RED)
+            elif hot and not self.was_hot:
+                self.toast("This Mac is running hot", "macOS is slowing it down", RED, 6.0)
+            self.was_hot = hot
+        self.auto_focus(now)
         while raw.downloads_done:
             self.toast("Download finished", raw.downloads_done.pop(0), GREEN, 3.0)
         download = raw.download if S["downloads"] else None
@@ -1625,9 +1800,9 @@ class Island:
                 self.toast(name + " complete", "Time for a break", RED, 5.0)
         pomo_str = "%d:%02d" % divmod(int(pomo_left), 60) if pomo_left else None
 
-        if self.timer_end and now >= self.timer_end:
-            self.timer_end = None
-            self.toast("Time's up", "The timer has finished", ORANGE, 6.0)
+        for timer in [t for t in self.timers if now >= t["end"]]:
+            self.timers.remove(timer)
+            self.toast("Time's up", timer["name"] or "The timer has finished", ORANGE, 6.0)
             sound = NSSound.soundNamed_("Glass")
             if sound is not None:
                 sound.play()
@@ -1678,12 +1853,17 @@ class Island:
         hud_on = bool(self.hud and now < self.hud[1]) and pointed is None and not self.drag_over \
             and not self.tour.active
         hud_level = 0.0
+        action = None                           # what clicking the two lines of text would do
+        joinable = event if (event is not None and event.get("link") and event["id"] != self.joined
+                             and event["start"] - now <= calendar_events.JOIN_WITHIN) else None
         self.draw_shelf()
         if self.tour.active:                    # the tour's captions take over the island
             title, sub = self.tour.text()
+        elif self.drag_over and self.drag_zone == "airdrop":
+            title, sub = "Drop to send by AirDrop", "Move right to keep it on the Shelf"
         elif self.drag_over:
-            count = len(S["shelf"])
-            title, sub = "Drop to move to the Shelf", "%d item%s there now" % (count, "" if count == 1 else "s")
+            title = "Drop to move to the Shelf" if self.drag_paths else "Drop to keep on the Shelf"
+            sub = "Move left to send by AirDrop" if self.drag_paths else "Saved there as a file"
         elif self.shelf_hover == "clear":
             title, sub = "Put everything back", "Returns all %d to where they came from" % len(S["shelf"])
         elif isinstance(self.shelf_hover, tuple) and self.shelf_hover[1] < len(S["shelf"]):
@@ -1710,9 +1890,17 @@ class Island:
                 else ("Point at a button" if opened else "Choose a category")
         elif self.toast_text:
             title, sub = self.toast_text
+        elif joinable:
+            left = joinable["start"] - now
+            title = joinable["title"]
+            sub = ("Starts in %d min" % max(1, round(left / 60)) if left > 0 else "Started") + "  ·  click to join"
+            action = lambda: self.join(joinable)
         elif live:
             title = " + ".join(n for n, on in (("Camera", mon.cam), ("Microphone", mon.mic)) if on) + " in use"
             sub = "Live now"
+            if mon.mic:
+                sub = "Muted  ·  click to unmute" if raw.mic_muted else "Live  ·  click to mute"
+                action = self.toggle_mic
         elif music:
             title, sub = music["title"], music["artist"] or music["app"]
             if self.seeking is not None:        # while dragging, the subtitle shows where you'd land
@@ -1730,13 +1918,19 @@ class Island:
         elif pomo_str:
             title, sub = (self.focus_mode or {}).get("name", "Focus"), "%s remaining" % pomo_str
         elif timer_str:
-            title, sub = "Timer", "%s remaining" % timer_str
+            first = min(self.timers, key=lambda t: t["end"])
+            title, sub = first["name"] or "Timer", "%s remaining" % timer_str
+            if len(self.timers) > 1:
+                sub += "  ·  +%d more" % (len(self.timers) - 1)
         elif watch_str:
             title, sub = "Stopwatch", watch_str
         elif event is not None and event["start"] - now <= 3600:        # an event within the hour
             title = event["title"]
             sub = calendar_events.describe(event, now, lambda t: time.strftime(
                 "%H:%M" if S["clock24"] else "%-I:%M %p", time.localtime(t)))
+        elif S["health"] and raw.thermal >= 2:      # for as long as macOS keeps throttling
+            title = "Running hot"
+            sub = "Slowed down  ·  heat level %s" % monitors.THERMAL_NAMES[min(raw.thermal, 3)].lower()
         else:
             title = _greeting()
             if S["stats"] and raw.net is not None and int(now / 4) % 2:    # takes turns with the line below
@@ -1747,6 +1941,7 @@ class Island:
                 sub = "\u2009·\u2009".join("%s %d%%" % (name, round(v * 100)) for name, v in stats if v is not None)
             else:
                 sub = "All quiet"
+        self.body_action = action
         if self.tour.active:
             music = None                    # the tour's captions get the whole middle column
         controls = bool(music and music.get("control"))

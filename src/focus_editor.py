@@ -150,7 +150,7 @@ class Editor:
 
     def build_form(self):
         self.sheet = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 500, 486), NSWindowStyleMaskTitled, NSBackingStoreBuffered, False)
+            NSMakeRect(0, 0, 500, 550), NSWindowStyleMaskTitled, NSBackingStoreBuffered, False)
         self.sheet.setReleasedWhenClosed_(False)
         content = self.sheet.contentView()
 
@@ -202,6 +202,29 @@ class Editor:
         note("Separate with commas, e.g. youtube.com, bilibili.com", 84)
         note("Safari, Chrome, Edge, Brave and Arc. The island itself is never blocked.", 62)
 
+        # Everything above moves up to make room for the "start by itself" rows.
+        for view in list(content.subviews()):
+            origin = view.frame().origin
+            view.setFrameOrigin_((origin.x, origin.y + 64))
+
+        def hint(text, x, y):
+            n = NSTextField.labelWithString_(text)
+            n.setFrame_(NSMakeRect(x, y, 484 - x, 16))
+            n.setFont_(NSFont.systemFontOfSize_(11))
+            n.setTextColor_(NSColor.secondaryLabelColor())
+            content.addSubview_(n)
+
+        label("Start at", 92)
+        self.auto_at = NSTextField.alloc().initWithFrame_(NSMakeRect(100, 91, 64, 22))
+        self.auto_at.setPlaceholderString_("09:00")
+        content.addSubview_(self.auto_at)
+        hint("Every day at this time (24-hour). Empty: never.", 172, 94)
+        label("With app", 60)
+        self.auto_app = NSTextField.alloc().initWithFrame_(NSMakeRect(100, 59, 150, 22))
+        self.auto_app.setPlaceholderString_("Xcode")
+        content.addSubview_(self.auto_app)
+        hint("Starts when this app opens. Empty: never.", 258, 62)
+
         cancel = self.button(content, "Cancel", (300, 12, 90, 32), self.close_form)
         cancel.setKeyEquivalent_("\x1b")
         save = self.button(content, "Save", (394, 12, 90, 32), self.save)
@@ -220,6 +243,8 @@ class Editor:
         self.apps_table.reloadData()
         self.app_selection_changed()
         self.sites.setStringValue_(", ".join(mode.get("sites", [])))
+        self.auto_at.setStringValue_(mode.get("auto_at", ""))
+        self.auto_app.setStringValue_(mode.get("auto_app", ""))
         self.sheet.makeFirstResponder_(self.name)
         self.window.beginSheet_completionHandler_(self.sheet, None)
 
@@ -267,7 +292,9 @@ class Editor:
                 sites.append(site)
         mode = {"name": name, "minutes": DURATIONS[self.length.indexOfSelectedItem()],
                 "block": RULES[self.rule.indexOfSelectedItem()][0], "apps": self.form_apps, "sites": sites,
-                "allow_stop": bool(self.allow_stop.state())}
+                "allow_stop": bool(self.allow_stop.state()),
+                "auto_at": focus.clean_time(self.auto_at.stringValue()),
+                "auto_app": self.auto_app.stringValue().strip()}
         if self.editing is None:
             self.modes().append(mode)
         else:

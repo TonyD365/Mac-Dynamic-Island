@@ -24,6 +24,14 @@ Click it for a ring of action buttons.
 **Live information**
 - Clock, date, battery, CPU / GPU / memory and network speed at a glance
 - Progress of browser downloads, and a note when one finishes
+- Meetings: five minutes before a calendar event with a Zoom, Teams, Meet (and similar) link, click the island to join
+- Click the island while the microphone is live to mute it for every app
+- Drag files to the left of the island to send them by AirDrop; drag text or a picture onto it to keep it on the Shelf
+- Several named timers at once
+- Focus modes that start by themselves, at a time of day or when an app opens
+- Warnings when storage is nearly full or the Mac is overheating
+- Optional: mirror other apps' notifications (off by default; needs Accessibility access)
+- Optional: hide macOS's own volume / brightness panel when you use the keyboard keys (same access)
 - Green and orange dots when an app is using the camera or microphone
 - Now playing from any app — music players and browser videos alike — with play / pause, skip and a
   progress bar you can drag to seek

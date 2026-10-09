@@ -37,6 +37,29 @@ CHROMIUM = {"com.google.Chrome", "com.microsoft.edgemac", "com.brave.Browser", "
 BLOCKED_PAGE = os.path.expanduser("~/Library/Application Support/DynamicIsland/blocked.html")
 
 
+def clean_time(text):
+    """'9:5', '09.05' or '0905' -> '09:05'; '' if it is not a time of day."""
+    digits = "".join(c if c.isdigit() else ":" for c in text.strip()).strip(":")
+    parts = [p for p in digits.split(":") if p]
+    if len(parts) == 1 and len(parts[0]) in (3, 4):
+        parts = [parts[0][:-2], parts[0][-2:]]
+    if len(parts) != 2 or not (int(parts[0]) < 24 and int(parts[1]) < 60 and len(parts[1]) <= 2):
+        return ""
+    return "%02d:%02d" % (int(parts[0]), int(parts[1]))
+
+
+def due(modes, clock, opened=()):
+    """The mode that should start by itself: its start time is `clock` ('HH:MM'), or its app is among
+    the lower-case names in `opened`. None if there is none."""
+    for mode in modes:
+        if clock and mode.get("auto_at") == clock:
+            return mode
+    for mode in modes:
+        if mode.get("auto_app", "").strip().lower() in opened and mode.get("auto_app", "").strip():
+            return mode
+    return None
+
+
 def clean_site(text):
     """'https://www.YouTube.com/watch' -> 'youtube.com'."""
     text = text.strip().lower()
