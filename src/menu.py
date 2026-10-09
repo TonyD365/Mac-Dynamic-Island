@@ -263,6 +263,7 @@ def settings_entries(island):
             toggle("exclamationmark.triangle.fill", "Storage & Heat Warnings", "health"),
             entry("set:mirror", "bell.badge.fill", "Mirror Notifications", island.mirror_status,
                   island.toggle_mirror, lambda: S["mirror"]),
+            toggle("bell.slash.fill", "Hide the System's Banners", "mirror_hide"),
             toggle("slider.horizontal.3", "Volume & Brightness Bar", "hud"),
             entry("set:replace_hud", "rectangle.slash", "Hide the System's Volume Panel", island.hud_keys_status,
                   island.toggle_hud_keys, lambda: S["replace_hud"]),

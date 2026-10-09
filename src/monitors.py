@@ -600,6 +600,7 @@ class Monitors:
         self.net = None          # (bytes received, bytes sent) per second
         self.mic_muted = None    # the microphone is silenced for every app
         self.mirror_on = False   # set by the island from the Mirror Notifications setting
+        self.mirror_hide = False # clear each system banner once it has been mirrored
         self.notices = []        # notifications that have just appeared, for the island to show
         self._noticed = None     # ids of the banners seen on the last look
         self.disk_free = None    # bytes
@@ -622,7 +623,7 @@ class Monitors:
         self._spawn(self._levels, 0.12)
         self._spawn(self._bluetooth, 1.0)    # frequent: a device can drop and rejoin within a couple of seconds
         self._spawn(self._downloads, 1.0)
-        self._spawn(self._notifications, 1.0)
+        self._spawn(self._notifications, 0.25)
         self._spawn(self._health, 15.0)
         self._spawn(self._stats, 3.0)
         self._spawn(self._calendar, 30.0)
@@ -672,9 +673,22 @@ class Monitors:
         if not self.mirror_on or not notifications.trusted():
             self._noticed = None
             return
+        # Once a second is plenty for showing them; clearing the system's banner wants to be quicker.
+        self._look = getattr(self, "_look", 0) + 1
+        if not self.mirror_hide and self._look % 4:
+            return
         found = notifications.banners()
-        self.notices.extend(notifications.fresh(found, self._noticed))
+        new = notifications.fresh(found, self._noticed)
+        self.notices.extend(new)
         self._noticed = set(found)
+        # The island shows it now, so the banner can go. A banner ignores this while it is still
+        # sliding in, so keep asking on each look until it has gone.
+        closing = getattr(self, "_closing", set())
+        if self.mirror_hide:
+            closing |= {notice["id"] for notice in new}
+            for ident in closing & found.keys():
+                notifications.act(found[ident]["element"], "Close")
+        self._closing = closing & found.keys() if self.mirror_hide else set()
 
     def _health(self):
         self.disk_free = disk_free()

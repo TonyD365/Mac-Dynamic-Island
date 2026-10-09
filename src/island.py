@@ -826,7 +826,9 @@ class Island:
         x = point.x - self.win_w / 2
         y = point.y - self.win_h
         if self.note and y < -self.exp_h:
-            self.note = None                        # a click on the notification puts it away
+            note, self.note = self.note, None       # a click opens it, as on the banner, and puts it away
+            if "element" in note:
+                threading.Thread(target=notifications.open_notice, args=(note,), daemon=True).start()
             return
         if self.tour.active:
             half = self.nh / 2
@@ -1053,7 +1055,8 @@ class Island:
     def show_note(self, notice, now):
         """Drop a panel below the island with the whole notification; the island itself carries on as usual."""
         self.note = dict(notice, until=now + NOTE_SECONDS)
-        self.set_text(self.note_app, notice["app"].upper())
+        opens = "element" in notice
+        self.set_text(self.note_app, notice["app"].upper() + ("  ·  CLICK TO OPEN" if opens else ""))
         self.set_text(self.note_title, notice["title"])
         self.set_text(self.note_body, notice["body"])
         self.pulse(WHITE)
@@ -1759,6 +1762,7 @@ class Island:
 
         raw.downloads_on = S["downloads"]
         raw.mirror_on = S["mirror"]
+        raw.mirror_hide = S["mirror_hide"]
         if S["replace_hud"] and not self.key_tap.running() and now - self.tap_tried > 3.0:
             self.tap_tried = now                    # keeps trying until Accessibility access is granted
             self.key_tap.start()

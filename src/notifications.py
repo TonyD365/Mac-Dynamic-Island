@@ -4,6 +4,8 @@ macOS gives an app no way to be told about other apps' notifications. What it do
 user has granted Accessibility access, is reading what is on screen; so the banners are read from
 Notification Center's own windows. Nothing is read unless Mirror Notifications is switched on.
 """
+import subprocess
+
 from AppKit import NSRunningApplication
 
 try:
@@ -50,14 +52,15 @@ def _collect(element, depth, found):
             if _attr(child, "AXRole") == "AXStaticText":
                 texts[str(_attr(child, "AXIdentifier") or len(texts))] = str(_attr(child, "AXValue") or "")
         description = str(_attr(element, "AXDescription") or "")
-        found[str(_attr(element, "AXIdentifier") or description)] = parse(description, texts)
+        ident = str(_attr(element, "AXIdentifier") or description)
+        found[ident] = dict(parse(description, texts), element=element, id=ident)
     elif depth < MAX_DEPTH:
         for child in _attr(element, "AXChildren") or []:
             _collect(child, depth + 1, found)
 
 
 def banners():
-    """The notifications on screen right now: {id: {'app', 'title', 'body'}}."""
+    """The notifications on screen right now: {id: {'app', 'title', 'body', 'element'}}."""
     found = {}
     for app in NSRunningApplication.runningApplicationsWithBundleIdentifier_(CENTER):
         element = AS.AXUIElementCreateApplication(app.processIdentifier())
@@ -65,6 +68,23 @@ def banners():
         for window in _attr(element, "AXWindows") or []:
             _collect(window, 0, found)
     return found
+
+
+def act(element, name):
+    """Do to a banner what a click would: "AXPress" opens it, "Close" clears it. False once it has gone."""
+    if AS is None or element is None:
+        return False
+    error, actions = AS.AXUIElementCopyActionNames(element, None)
+    for action in actions or [] if error == 0 else []:
+        if str(action) == name or str(action).startswith("Name:%s\n" % name):
+            return AS.AXUIElementPerformAction(element, action) == 0
+    return False
+
+
+def open_notice(notice):
+    """Open a notification as clicking its banner would; if the banner has gone, bring up its app."""
+    if not act(notice.get("element"), "AXPress") and notice.get("app"):
+        subprocess.Popen(["/usr/bin/open", "-a", notice["app"]], stderr=subprocess.DEVNULL)
 
 
 def fresh(found, seen):
