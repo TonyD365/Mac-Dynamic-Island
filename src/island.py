@@ -172,6 +172,7 @@ class Island:
         self.apps_open = None         # names of the running apps, on the last look
         self.apps_checked = 0.0
         self.disk_warned = 0.0
+        self.health_from = time.time() + 8.0      # warnings wait until the welcome has had its turn
         self.was_hot = False
         self.stopwatch_start = None   # when the stopwatch was started
         self.drag_over = False        # files are being dragged over the island
@@ -1748,14 +1749,14 @@ class Island:
                 self.show_note(notice, now)
             elif S["mirror"]:
                 self.toast(notice["title"], notice["body"], WHITE, 4.5)
-        if S["health"]:
+        if S["health"] and now >= self.health_from:
             if raw.disk_free is not None and raw.disk_free < LOW_DISK and now - self.disk_warned > 6 * 3600:
                 self.disk_warned = now
                 self.toast("Storage is almost full", "%s left on this Mac" % monitors.size_text(raw.disk_free),
                            ORANGE, 6.0)
             hot = raw.thermal >= 2
             if hot and not self.was_hot:
-                self.toast("This Mac is running hot", "macOS is slowing it down to cool off", RED, 6.0)
+                self.toast("This Mac is running hot", "macOS is slowing it down", RED, 6.0)
             self.was_hot = hot
         self.auto_focus(now)
         while raw.downloads_done:

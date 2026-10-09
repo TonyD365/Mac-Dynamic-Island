@@ -177,7 +177,8 @@ def disk_free():
 
 def thermal_state():
     """0 nominal, 1 fair, 2 serious (macOS is slowing the Mac down), 3 critical."""
-    return int(NSProcessInfo.processInfo().thermalState())
+    fake = os.environ.get("DI_FAKE_THERMAL")         # for trying the warning out: DI_FAKE_THERMAL=2
+    return int(fake) if fake else int(NSProcessInfo.processInfo().thermalState())
 
 
 def volume():
