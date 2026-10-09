@@ -253,6 +253,13 @@ class NewFeatureTests(unittest.TestCase):
                          "Re: plan  ·  ok")
         self.assertEqual(read("Reminders", {}), {"app": "Reminders", "title": "Reminders", "body": ""})
 
+    def test_a_notifications_own_buttons_are_picked_out(self):
+        names = ["AXPress", "Name:Show Details\nTarget:0x0\nSelector:(null)", "Name:Reply\nTarget:0x0",
+                 "Name:Mark as Read\nTarget:0x0", "Name:Close\nTarget:0x0", "Name:Reply\nTarget:0x0"]
+        self.assertEqual(notifications.buttons(names), ["Reply", "Mark as Read"])
+        self.assertEqual(notifications.buttons(["AXPress", "Name:Show\nTarget:0x0"]), [])
+        self.assertEqual(notifications.buttons(None), [])
+
     def test_only_new_banners_are_announced(self):
         one = {"a": {"app": "Mail", "title": "t", "body": ""}}
         self.assertEqual(notifications.fresh(one, None), [])            # the first look only takes stock

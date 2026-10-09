@@ -32,7 +32,7 @@ import subprocess
 import focus
 import hud_keys
 import notifications
-from AppKit import NSApplication, NSSharingService
+from AppKit import NSApplication, NSMenu, NSSharingService
 import focus_editor
 import focus_panel
 import lockscreen
@@ -67,6 +67,8 @@ SHELF_ROWS = 3        # files listed in the drawer at once; scroll for the rest
 SHELF_ROW_H = 19.0
 NOTE_H = 88.0           # the panel that drops below the island to show a notification in full
 NOTE_SECONDS = 6.0
+NOTE_BUTTONS = 30.0     # more height when the notification has buttons of its own
+NOTE_SHOWN = 3          # buttons shown; any others go in a menu under the last one
 LOW_DISK = 10e9         # warn when less than this many bytes are free
 INNER_SLOTS = 8       # buttons visible at once in each ring; more are reached by turning it
 OUTER_SLOTS = 9
@@ -372,7 +374,7 @@ class Island:
         # Room for the drawer on the right, and for the buttons' spring overshoot, or the window
         # edge clips them mid-bounce. (The window is transparent and click-through, so extra width is free.)
         self.win_w = 2 * math.ceil(max(hx + GLOW_PAD, (hx + SHELF_W + outer_offset) * 1.04 + MENU_R + 10))
-        self.win_h = math.ceil(max(hy + NOTE_H + GLOW_PAD, (hy + outer_offset) * 1.06 + MENU_R + 10))
+        self.win_h = math.ceil(max(hy + NOTE_H + NOTE_BUTTONS + GLOW_PAD, (hy + outer_offset) * 1.06 + MENU_R + 10))
         self.panel.setFrame_display_(
             NSMakeRect(self.cx - self.win_w / 2, self.top - self.win_h, self.win_w, self.win_h), True)
         self.build_layers()
@@ -571,6 +573,28 @@ class Island:
         self.note_body = self.text_layer(self.note_group, nx, top - 59, nw, 10.5, GRAY, "left")
         self.note_body.setWrapped_(True)                # up to three lines, then an ellipsis
         self.note_body.setFrame_(NSMakeRect(nx, top - NOTE_H + 8, nw, 42))
+        self.note_box = (nx, nw, top)
+        self.note_icon = CALayer.layer()                # the sending app's icon
+        self.note_icon.setFrame_(NSMakeRect(nx, top - 20, 14, 14))
+        self.note_icon.setContentsGravity_("resizeAspect")
+        self.note_picture = CALayer.layer()             # a picture attached to the notification
+        self.note_picture.setFrame_(NSMakeRect(nx + nw - 46, top - 72, 46, 46))
+        self.note_picture.setContentsGravity_("resizeAspectFill")
+        self.note_picture.setCornerRadius_(7)
+        self.note_picture.setMasksToBounds_(True)
+        for l in (self.note_icon, self.note_picture):
+            l.setContentsScale_(self.scale)
+            self.note_group.addSublayer_(l)
+        self.note_pills = []                            # the notification's own buttons
+        for _ in range(NOTE_SHOWN):
+            pill = CALayer.layer()
+            pill.setCornerRadius_(10)
+            pill.setBackgroundColor_(NSColor.colorWithWhite_alpha_(1.0, 0.16).CGColor())
+            pill.setOpacity_(0)
+            self.note_group.addSublayer_(pill)
+            label = self.text_layer(self.note_group, 0, 0, 10, 10.5, WHITE, "center")
+            self.note_pills.append((pill, label))
+        self.note_hits = []                             # (x0, x1, y0, y1, what) of the buttons on show
 
         self.detail = self.group(self.island)
         full = NSMakeRect(-w / 2, -self.exp_h, w, self.exp_h)
@@ -840,9 +864,8 @@ class Island:
         x = point.x - self.win_w / 2
         y = point.y - self.win_h
         if self.note and y < -self.exp_h:
-            note, self.note = self.note, None       # a click opens it, as on the banner, and puts it away
-            if "element" in note:
-                threading.Thread(target=notifications.open_notice, args=(note,), daemon=True).start()
+            note, self.note = self.note, None       # a click answers or opens it, as on the banner
+            self.note_click(note, x, y)
             return
         if self.tour.active:
             half = self.nh / 2
@@ -1068,12 +1091,77 @@ class Island:
 
     def show_note(self, notice, now):
         """Drop a panel below the island with the whole notification; the island itself carries on as usual."""
-        self.note = dict(notice, until=now + NOTE_SECONDS)
+        actions = list(notice.get("actions") or [])
+        self.note = dict(notice, until=now + (NOTE_SECONDS if not actions else 12.0),
+                         height=NOTE_H + (NOTE_BUTTONS if actions else 0.0))
         opens = "element" in notice
+        nx, nw, top = self.note_box
+        icon = self.app_icon(notice["app"]) if opens else None
+        image = notice.get("picture")
+        text_w = nw - (54 if image is not None else 0)          # the words make room for a picture
+
+        def place():
+            self.note_icon.setContents_(icon)
+            self.note_picture.setContents_(image)
+            self.note_picture.setOpacity_(1 if image is not None else 0)
+            shift = 19 if icon is not None else 0
+            self.note_app.setFrame_(NSMakeRect(nx + shift, top - 19, nw - shift, 11))
+            self.note_title.setFrame_(NSMakeRect(nx, top - 36, text_w, 16))
+            self.note_body.setFrame_(NSMakeRect(nx, top - NOTE_H + 8, text_w, 42))
+            # The notification's own buttons, in a row along the bottom.
+            shown = actions if len(actions) <= NOTE_SHOWN else actions[:NOTE_SHOWN - 1] + ["More\u2009\u25be"]
+            width = (nw - 8 * (NOTE_SHOWN - 1)) / NOTE_SHOWN
+            y = top - NOTE_H - NOTE_BUTTONS / 2 + 4
+            self.note_hits = []
+            for index, (pill, label) in enumerate(self.note_pills):
+                on = index < len(shown)
+                pill.setOpacity_(1 if on else 0)
+                label.setOpacity_(1 if on else 0)
+                if not on:
+                    continue
+                x = nx + index * (width + 8)
+                pill.setFrame_(NSMakeRect(x, y - 10, width, 20))
+                label.setFrame_(NSMakeRect(x + 4, y - 7, width - 8, 14))
+                more = len(actions) > NOTE_SHOWN and index == NOTE_SHOWN - 1
+                self.note_hits.append((x, x + width, y - 12, y + 12,
+                                       actions[NOTE_SHOWN - 1:] if more else actions[index]))
+        _no_anim(place)
+        for index, (_, label) in enumerate(self.note_pills):
+            names = actions if len(actions) <= NOTE_SHOWN else actions[:NOTE_SHOWN - 1] + ["More\u2009\u25be"]
+            self.set_text(label, names[index] if index < len(names) else "")
         self.set_text(self.note_app, notice["app"].upper() + ("  ·  CLICK TO OPEN" if opens else ""))
         self.set_text(self.note_title, notice["title"])
         self.set_text(self.note_body, notice["body"])
         self.pulse(WHITE)
+
+    def app_icon(self, name):
+        """The icon of the app with this name, if it can be found."""
+        if name not in self._icons:
+            path = NSWorkspace.sharedWorkspace().fullPathForApplication_(name)
+            self._icons[name] = NSWorkspace.sharedWorkspace().iconForFile_(path) if path else None
+        return self._icons[name]
+
+    def note_click(self, note, x, y):
+        """A click on the notification panel: one of its buttons, or the notification itself."""
+        run = lambda job, *args: threading.Thread(target=job, args=args, daemon=True).start()
+        for x0, x1, y0, y1, what in self.note_hits if note.get("actions") else ():
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                if isinstance(what, list):          # "More": the rest of the buttons, as a menu
+                    menu_ = NSMenu.alloc().init()
+                    self._note_targets = []
+                    for name in what:
+                        target = custom_buttons._Action.alloc().init()
+                        target.callback = lambda name=name: run(notifications.act, note["element"], name)
+                        self._note_targets.append(target)
+                        item = menu_.addItemWithTitle_action_keyEquivalent_(name, "fire:", "")
+                        item.setTarget_(target)
+                    menu_.popUpMenuPositioningItem_atLocation_inView_(
+                        None, (x0 + self.win_w / 2, y0 + self.win_h), self.view)
+                else:
+                    run(notifications.act, note["element"], what)
+                return
+        if "element" in note:
+            run(notifications.open_notice, note)
 
     def join(self, event):
         self.joined = event["id"]
@@ -1723,7 +1811,7 @@ class Island:
         elif self.note and on_island:
             self.note["until"] = max(self.note["until"], now + 1.5)     # stays while it is being read
         mode = "expanded" if (hover or self.menu_open or now < self.peek_until or self.note) else "compact"
-        extra = min(NOTE_H, self.win_h - GLOW_PAD - self.exp_h) if self.note else 0.0
+        extra = min(self.note["height"], self.win_h - GLOW_PAD - self.exp_h) if self.note else 0.0
         drawer = self.drawer_w()
         if drawer != self.ring_ext:
             self.layout_rings(drawer)               # the rings step aside for the drawer
