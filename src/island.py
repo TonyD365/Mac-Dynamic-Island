@@ -255,6 +255,7 @@ class Island:
             center.addObserverForName_object_queue_usingBlock_(name, None, None, lambda note, v=value: self.set_locked(v))
             for name, value in (("com.apple.screenIsLocked", True), ("com.apple.screenIsUnlocked", False))]
         self.monitors.calendar_on = self.settings["calendar"]
+        self.monitors.downloads_on = self.settings["downloads"]
         if self.settings["toured"]:
             self.welcome_soon(1.2)      # also greets when the island starts at login
         else:                           # first run: the tour takes the greeting's place
@@ -519,9 +520,12 @@ class Island:
             icon.setContentsGravity_("resizeAspect")
             icon.setContentsScale_(self.scale)
             self.drawer.addSublayer_(icon)
-            name = self.text_layer(self.drawer, x + 12, y, SHELF_W - 40, 10.5, WHITE, "left")
+            name = self.text_layer(self.drawer, x + 12, y, SHELF_W - 52, 10.5, WHITE, "left")
             name.setTruncationMode_("middle")           # keeps the file extension in view
-            self.shelf_rows.append((back, icon, name))
+            undo = self.symbol_layer(self.drawer, dx + SHELF_W - 14, y)      # put this one back
+            self.set_symbol(undo, "arrow.uturn.backward", WHITE, 8.5)
+            undo.setOpacity_(0)
+            self.shelf_rows.append((back, icon, name, undo))
         self.drawer_note = self.text_layer(self.drawer, dx + 8, -self.exp_h / 2 - 4, SHELF_W - 14, 10.5, GRAY, "center")
         self.shelf_shown = None
         _no_anim(lambda: self.drawer.setOpacity_(0))
@@ -800,6 +804,10 @@ class Island:
         hit = self.shelf_at(x, y)
         if hit == "clear":
             self.shelf_work(lambda: ("back", shelf.put_back_all(self.settings)))
+            return
+        if isinstance(hit, tuple):          # the arrow on one row
+            path = self.settings["shelf"][hit[1]]
+            self.shelf_work(lambda: ("back", shelf.put_back_all(self.settings, [path])))
             return
         if hit is not None:
             self.shelf_press = (self.settings["shelf"][hit], hit, (x, y))     # a click reveals; a drag takes it out
@@ -1100,7 +1108,8 @@ class Island:
                 and self.exp_w / 2 <= x <= self.exp_w / 2 + self.ext and -self.exp_h <= y <= 0)
 
     def shelf_at(self, x, y):
-        """What part of the drawer is at this point: a file's index, "clear", or None."""
+        """What part of the drawer is at this point: a file's index, ("back", index) for the arrow
+        on its row, "clear", or None."""
         paths = self.settings["shelf"]
         if not paths or not self.over_drawer(x, y):
             return None
@@ -1110,7 +1119,7 @@ class Island:
         for row, (_, ty) in enumerate(self.shelf_pos):
             index = self.shelf_offset + row
             if index < len(paths) and abs(y - ty) <= SHELF_ROW_H / 2:
-                return index
+                return ("back", index) if abs(x - cx) <= 10 else index
         return None
 
     def scroll_shelf(self, step):
@@ -1135,13 +1144,15 @@ class Island:
         if key == self.shelf_shown:
             return
         self.shelf_shown = key
-        hovered = self.shelf_hover if isinstance(self.shelf_hover, int) else None
+        hover = self.shelf_hover
+        hovered = hover if isinstance(hover, int) else (hover[1] if isinstance(hover, tuple) else None)
 
         def apply():
-            for row, (back, icon, _) in enumerate(self.shelf_rows):
+            for row, (back, icon, _, undo) in enumerate(self.shelf_rows):
                 index = self.shelf_offset + row
                 icon.setContents_(self.file_icon(paths[index]) if index < len(paths) else None)
                 back.setOpacity_(1 if index == hovered else 0)
+                undo.setOpacity_((1 if isinstance(hover, tuple) else 0.45) if index == hovered else 0)
             self.clear_mark.setOpacity_(1 if paths else 0)
             self.shelf_mark.setOpacity_(1 if paths else 0)
             # Clock-side stays put; battery, music bars and countdown slide right to clear the folder mark.
@@ -1151,7 +1162,7 @@ class Island:
             f = self.ear_frame
             self.ear_text.setFrame_(NSMakeRect(f.origin.x + shift, f.origin.y, f.size.width, f.size.height))
         _no_anim(apply)
-        for row, (_, _, name) in enumerate(self.shelf_rows):
+        for row, (_, _, name, _) in enumerate(self.shelf_rows):
             index = self.shelf_offset + row
             shown = (os.path.basename(paths[index].rstrip("/")) or paths[index]) if index < len(paths) else ""
             self.set_text(name, shown)
@@ -1179,6 +1190,7 @@ class Island:
         self.settings["calendar"] = not self.settings["calendar"] and calendar.available()
         settings.save(self.settings)
         self.monitors.calendar_on = self.settings["calendar"]
+        self.monitors.downloads_on = self.settings["downloads"]
         if self.settings["calendar"] and not calendar.authorized():
             calendar.request_access()
 
@@ -1598,6 +1610,11 @@ class Island:
                     self.toast(name, "Disconnected", GRAY)
             self.prev_bt = bt
 
+        raw.downloads_on = S["downloads"]
+        while raw.downloads_done:
+            self.toast("Download finished", raw.downloads_done.pop(0), GREEN, 3.0)
+        download = raw.download if S["downloads"] else None
+
         pomo_left = None
         if self.pomo_end:
             pomo_left = self.pomo_end - now
@@ -1669,7 +1686,10 @@ class Island:
             title, sub = "Drop to move to the Shelf", "%d item%s there now" % (count, "" if count == 1 else "s")
         elif self.shelf_hover == "clear":
             title, sub = "Put everything back", "Returns all %d to where they came from" % len(S["shelf"])
-        elif self.shelf_hover is not None and self.shelf_hover < len(S["shelf"]):
+        elif isinstance(self.shelf_hover, tuple) and self.shelf_hover[1] < len(S["shelf"]):
+            path = S["shelf"][self.shelf_hover[1]]
+            title, sub = "Put back", os.path.basename(path.rstrip("/")) or path
+        elif isinstance(self.shelf_hover, int) and self.shelf_hover < len(S["shelf"]):
             path = S["shelf"][self.shelf_hover]
             title, sub = os.path.basename(path.rstrip("/")) or path, "Drag out  ·  click to reveal"
         elif pointed is not None:               # the island doubles as the buttons' tooltip
@@ -1699,6 +1719,14 @@ class Island:
                 clock = lambda t: "%d:%02d:%02d" % (t // 3600, t % 3600 // 60, t % 60) if t >= 3600 \
                     else "%d:%02d" % (t // 60, t % 60)
                 sub = "%s / %s" % (clock(self.seeking * music["duration"]), clock(music["duration"]))
+        elif download:
+            title = download["title"] or "Downloading"
+            if download["count"] > 1:
+                title = "%s  +%d" % (title, download["count"] - 1)
+            parts = [monitors.size_text(download["bytes"]), monitors.rate_text(download["speed"])]
+            if download["total"]:
+                parts.insert(0, "%d%%" % min(100, round(100 * download["bytes"] / download["total"])))
+            sub = "\u2009·\u2009".join(parts)
         elif pomo_str:
             title, sub = (self.focus_mode or {}).get("name", "Focus"), "%s remaining" % pomo_str
         elif timer_str:
@@ -1711,7 +1739,9 @@ class Island:
                 "%H:%M" if S["clock24"] else "%-I:%M %p", time.localtime(t)))
         else:
             title = _greeting()
-            if S["stats"] and raw.cpu is not None and raw.mem is not None:
+            if S["stats"] and raw.net is not None and int(now / 4) % 2:    # takes turns with the line below
+                sub = "\u2193 %s\u2009·\u2009\u2191 %s" % (monitors.rate_text(raw.net[0]), monitors.rate_text(raw.net[1]))
+            elif S["stats"] and raw.cpu is not None and raw.mem is not None:
                 stats = [("CPU", raw.cpu), ("GPU", raw.gpu), ("RAM", raw.mem)]
                 # Thin spaces round the dots keep all three on one line.
                 sub = "\u2009·\u2009".join("%s %d%%" % (name, round(v * 100)) for name, v in stats if v is not None)

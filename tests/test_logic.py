@@ -196,6 +196,65 @@ class SettingsTests(unittest.TestCase):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_network_totals_count_each_real_interface_once(self):
+        text = ("Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll\n"
+                "lo0        16384 <Link#1>                         15671     0    4205841    15671     0    4205841     0\n"
+                "en0        1500  <Link#11>   aa:bb:cc:dd:ee:ff   100     0       5000      80     0       3000     0\n"
+                "en0        1500  192.168.1     192.168.1.5         100     -       5000      80     -       3000     -\n"
+                "en5*       1500  <Link#7>    aa:bb:cc:dd:ee:00    10     0        700       5     0        200     0\n"
+                "utun0      1380  <Link#12>                          9     0        999       9     0        999     0\n")
+        self.assertEqual(monitors.parse_netstat(text), (5700, 3200))
+
+    def test_rates_and_sizes_read_naturally(self):
+        self.assertEqual(monitors.rate_text(0), "0 KB/s")
+        self.assertEqual(monitors.rate_text(340_000), "340 KB/s")
+        self.assertEqual(monitors.rate_text(1_250_000), "1.2 MB/s")
+        self.assertEqual(monitors.size_text(2_500_000_000), "2.50 GB")
+
+    def test_partial_downloads_are_recognised(self):
+        self.assertEqual(monitors.partial_title("movie.mp4.download"), "movie.mp4")
+        self.assertEqual(monitors.partial_title("setup.dmg.part"), "setup.dmg")
+        self.assertEqual(monitors.partial_title("Unconfirmed 48213.crdownload"), "")
+        self.assertIsNone(monitors.partial_title("notes.txt"))
+        self.assertIsNone(monitors.partial_title(".download"))
+
+    def test_downloads_are_followed_until_they_finish(self):
+        with tempfile.TemporaryDirectory() as folder:
+            part = os.path.join(folder, "big.zip.part")
+            with open(part, "wb") as f:
+                f.write(b"x" * 2000)
+            with open(os.path.join(folder, "other.txt"), "w") as f:
+                f.write("no")
+            found = monitors.downloads_now(folder)
+            self.assertEqual(list(found), [part])
+            self.assertEqual(found[part][:3], ("big.zip", 2000, None))
+            os.rename(part, os.path.join(folder, "big.zip"))
+            self.assertEqual(monitors.finished_download(part, time.time(), folder), "big.zip")
+            self.assertEqual(monitors.downloads_now(folder), {})
+
+    def test_a_cancelled_download_is_not_announced(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertIsNone(monitors.finished_download(os.path.join(folder, "a.zip.crdownload"), time.time() + 60, folder))
+
+    def test_bluetooth_is_only_scanned_when_devices_change(self):
+        mon, scans, seen = monitors.Monitors(), [], [(1,)]
+        with Stub(monitors, "bluetooth", lambda: scans.append(1) or {}), \
+                Stub(monitors, "bluetooth_signature", lambda: seen[0]):
+            mon._bluetooth()                    # the first scan
+            mon._bt_until = 0.0                 # ... and the settling time after it has passed
+            mon._bluetooth()
+            mon._bluetooth()
+            self.assertEqual(len(scans), 1)
+            seen[0] = (1, 2)                    # a device arrived
+            mon._bluetooth()
+            self.assertEqual(len(scans), 2)
+            mon._bt_until = 0.0
+            mon._bluetooth()
+            self.assertEqual(len(scans), 2)
+            mon._bt_next = 0.0                  # the safety net comes due
+            mon._bluetooth()
+            self.assertEqual(len(scans), 3)
+
     def test_battery(self):
         text = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t87%; charging; 0:30 remaining\n"
         with Stub(monitors.subprocess, "run", fake_run(text)):
@@ -474,6 +533,13 @@ class ShelfTests(unittest.TestCase):
         self.assertEqual(shelf.put_back_all(self.values), (2, 0))
         self.assertTrue(all(os.path.exists(p) for p in paths))
         self.assertEqual(self.values["shelf"], [])
+
+    def test_put_back_just_one(self):
+        shelf.store(self.values, [self.make(self.home, "a.txt"), self.make(self.other, "b.txt")])
+        first, second = self.values["shelf"]
+        self.assertEqual(shelf.put_back_all(self.values, [first]), (1, 0))
+        self.assertEqual(self.values["shelf"], [second])
+        self.assertTrue(os.path.exists(os.path.join(self.home, "a.txt")))
 
     def test_put_back_goes_somewhere_safe_when_the_old_folder_is_gone(self):
         gone = os.path.join(self.home, "temp")

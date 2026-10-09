@@ -22,7 +22,8 @@ Click it for a ring of action buttons.
 ## Features
 
 **Live information**
-- Clock, date, battery and CPU / memory at a glance
+- Clock, date, battery, CPU / GPU / memory and network speed at a glance
+- Progress of browser downloads, and a note when one finishes
 - Green and orange dots when an app is using the camera or microphone
 - Now playing from any app — music players and browser videos alike — with play / pause, skip and a
   progress bar you can drag to seek
@@ -208,5 +209,7 @@ Settings are stored in `~/Library/Application Support/DynamicIsland/settings.jso
   Force-quitting Dynamic Island lifts all blocking.
 - **Not shown before login.** macOS does not run user apps on the login screen at startup; the
   island appears once you log in.
-- Bluetooth alerts poll once a second, so a device that drops and reconnects faster than that is
-  missed.
+- Bluetooth alerts check once a second whether a device has come or gone, so one that drops and
+  reconnects faster than that is missed.
+- Download progress watches the Downloads folder (macOS asks for access once). Only Safari records
+  the total size, so other browsers show the amount downloaded and the speed, without a percentage.

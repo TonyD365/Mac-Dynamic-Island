@@ -18,7 +18,8 @@ import time
 
 # How often each reading runs in the app, in seconds (see Monitors.start).
 INTERVALS = {"camera_in_use": 1.0, "mic_in_use": 1.0, "volume": 0.12, "muted": 0.12, "brightness": 0.12,
-             "battery": 4.0, "bluetooth": 1.0, "now_playing": 1.5, "memory_used": 3.0, "gpu_usage": 3.0}
+             "battery": 4.0, "bluetooth": 30.0, "bluetooth_signature": 1.0, "now_playing": 1.5, "memory_used": 3.0,
+             "gpu_usage": 3.0, "net_bytes": 3.0}
 TICKS_PER_SECOND, REFRESHES_PER_SECOND = 20, 4
 NOISE = 0.25        # differences smaller than this are within run-to-run variation on shared runners
 

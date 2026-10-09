@@ -6,6 +6,7 @@ devices themselves are never opened, so no camera/mic permission is needed.
 import ctypes
 import json
 import os
+import plistlib
 import re
 import subprocess
 import threading
@@ -157,6 +158,130 @@ def bluetooth():
             devices[name] = (info.get("device_batteryLevelMain") or info.get("device_batteryLevelLeft")
                              or info.get("device_batteryLevelCase"))
     return devices
+
+
+_iokit = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+_iokit.IOServiceMatching.restype = ctypes.c_void_p
+_iokit.IOServiceMatching.argtypes = [ctypes.c_char_p]
+_iokit.IOServiceGetMatchingServices.argtypes = [ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+_iokit.IOIteratorNext.restype = ctypes.c_uint32
+_iokit.IOIteratorNext.argtypes = [ctypes.c_uint32]
+_iokit.IOObjectRelease.argtypes = [ctypes.c_uint32]
+_iokit.IORegistryEntryGetRegistryEntryID.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)]
+
+
+def _service_ids(kind):
+    """The registry ids of every device of this kind that is attached right now."""
+    iterator = ctypes.c_uint32()
+    if _iokit.IOServiceGetMatchingServices(0, _iokit.IOServiceMatching(kind), ctypes.byref(iterator)):
+        return ()
+    ids = []
+    while True:
+        service = _iokit.IOIteratorNext(iterator)
+        if not service:
+            break
+        entry = ctypes.c_uint64()
+        if not _iokit.IORegistryEntryGetRegistryEntryID(service, ctypes.byref(entry)):
+            ids.append(entry.value)
+        _iokit.IOObjectRelease(service)
+    _iokit.IOObjectRelease(iterator)
+    return tuple(sorted(ids))
+
+
+def bluetooth_signature():
+    """Changes whenever a Bluetooth or input device comes or goes. Read in-process, so it is cheap
+    enough to check every second; the full (slow) bluetooth() scan only runs when this changes."""
+    return _service_ids(b"IOBluetoothDevice") + (0,) + _service_ids(b"IOHIDDevice")
+
+
+def parse_netstat(text):
+    """Total (received, sent) bytes over the Wi-Fi and Ethernet interfaces, from `netstat -ib`."""
+    down = up = 0
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 10 and f[0].startswith("en") and f[2].startswith("<Link#"):
+            try:
+                down, up = down + int(f[-5]), up + int(f[-2])
+            except ValueError:
+                pass
+    return down, up
+
+
+def net_bytes():
+    return parse_netstat(subprocess.run(["netstat", "-ib"], capture_output=True, encoding="utf-8",
+                                        errors="replace", timeout=3).stdout)
+
+
+def rate_text(per_second):
+    return "%.1f MB/s" % (per_second / 1e6) if per_second >= 1e6 else "%d KB/s" % (per_second / 1e3)
+
+
+def size_text(size):
+    if size >= 1e9:
+        return "%.2f GB" % (size / 1e9)
+    return "%.1f MB" % (size / 1e6) if size >= 1e6 else "%d KB" % (size / 1e3)
+
+
+DOWNLOADS = os.path.expanduser("~/Downloads")
+PARTIAL = (".crdownload", ".download", ".part", ".opdownload")     # Chrome and Edge, Safari, Firefox, Opera
+DOWNLOAD_STALE = 15.0       # a partial file untouched for this long is paused or abandoned, not downloading
+
+
+def partial_title(name):
+    """The file a partial download will become ("" if the browser hasn't named it yet); None if
+    this is not a partial download."""
+    for suffix in PARTIAL:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            title = name[:-len(suffix)]
+            return "" if title.startswith("Unconfirmed ") else title
+    return None
+
+
+def downloads_now(folder=None):
+    """Partial downloads in the Downloads folder: {path: (title, bytes so far, total or None, modified)}."""
+    found = {}
+    with os.scandir(folder or DOWNLOADS) as entries:
+        for e in entries:
+            title = partial_title(e.name)
+            if title is None:
+                continue
+            try:
+                info = e.stat()
+                size, total, modified = info.st_size, None, info.st_mtime
+                if e.is_dir():              # Safari downloads into a folder, with its own record of the total
+                    size = 0
+                    for inner in os.scandir(e.path):
+                        part = inner.stat()
+                        if inner.name != "Info.plist":
+                            size += part.st_size
+                        modified = max(modified, part.st_mtime)
+                    try:
+                        with open(os.path.join(e.path, "Info.plist"), "rb") as f:
+                            total = int(plistlib.load(f).get("DownloadEntryProgressTotalToLoad") or 0) or None
+                    except Exception:
+                        total = None
+            except OSError:
+                continue
+            found[e.path] = (title, size, total, modified)
+    return found
+
+
+def finished_download(path, now, folder=None):
+    """The name of the file a vanished partial download turned into, or None if it was cancelled."""
+    title = partial_title(os.path.basename(path))
+    if title and os.path.exists(os.path.join(os.path.dirname(path), title)):
+        return title
+    newest = None                           # renamed to something else: the file that just appeared
+    try:
+        with os.scandir(folder or DOWNLOADS) as entries:
+            for e in entries:
+                if partial_title(e.name) is None and not e.name.startswith("."):
+                    changed = e.stat().st_ctime
+                    if now - changed <= 5 and (newest is None or changed > newest[0]):
+                        newest = (changed, e.name)
+    except OSError:
+        return None
+    return newest[1] if newest else None
 
 
 _libc = ctypes.CDLL(None)
@@ -339,6 +464,10 @@ def player_command(app, command):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+BT_SETTLE = 6.0         # keep scanning this long after a device comes or goes
+BT_RESCAN = 30.0        # otherwise scan this often, to refresh battery levels
+
+
 class Monitors:
     def __init__(self):
         self.cam = False
@@ -359,7 +488,16 @@ class Monitors:
         self.cpu = None
         self.gpu = None
         self.mem = None
+        self.net = None          # (bytes received, bytes sent) per second
+        self.downloads_on = False    # set by the island from the Download Progress setting
+        self.download = None     # {"title", "bytes", "total", "speed", "count"} while a browser is downloading
+        self.downloads_done = [] # names of downloads that have just finished, for the island to announce
         self._ticks = None
+        self._net = None
+        self._partial = {}       # path -> (bytes, time) of the downloads being followed
+        self._bt_seen = None
+        self._bt_until = 0.0
+        self._bt_next = 0.0
 
     def start(self):
         self._spawn(self._devices, 1.0)
@@ -367,6 +505,7 @@ class Monitors:
         self._spawn(self._music, 1.5)
         self._spawn(self._levels, 0.12)
         self._spawn(self._bluetooth, 1.0)    # frequent: a device can drop and rejoin within a couple of seconds
+        self._spawn(self._downloads, 1.0)
         self._spawn(self._stats, 3.0)
         self._spawn(self._calendar, 30.0)
 
@@ -399,7 +538,37 @@ class Monitors:
         self.brightness = brightness(self.display_id)
 
     def _bluetooth(self):
-        self.bt = bluetooth()
+        # The full scan starts a system tool, so it only runs when a device has come or gone (and for
+        # a few seconds after, while names and battery levels settle), plus now and then as a safety net.
+        now = time.time()
+        seen = bluetooth_signature()
+        if seen != self._bt_seen:
+            self._bt_seen = seen
+            self._bt_until = now + BT_SETTLE
+        if self.bt is None or now < self._bt_until or now >= self._bt_next:
+            self.bt = bluetooth()
+            self._bt_next = now + BT_RESCAN
+
+    def _downloads(self):
+        if not self.downloads_on:
+            self.download, self._partial = None, {}
+            return
+        now = time.time()
+        found = downloads_now()
+        for path in self._partial.keys() - found.keys():        # gone: finished, or cancelled
+            name = finished_download(path, now)
+            if name:
+                self.downloads_done.append(name)
+        active = {p: v for p, v in found.items() if now - v[3] < DOWNLOAD_STALE}
+        best = max(active, key=lambda p: active[p][3], default=None)
+        if best is None:
+            self.download = None
+        else:
+            title, size, total, _ = active[best]
+            before = self._partial.get(best)
+            speed = max(0.0, (size - before[0]) / (now - before[1])) if before and now > before[1] else 0.0
+            self.download = {"title": title, "bytes": size, "total": total, "speed": speed, "count": len(active)}
+        self._partial = {p: (v[1], now) for p, v in active.items()}
 
     def _stats(self):
         ticks = _cpu_ticks()
@@ -411,6 +580,10 @@ class Monitors:
         self._ticks = ticks
         self.mem = memory_used()
         self.gpu = gpu_usage()
+        got, now = net_bytes(), time.time()
+        if self._net and now > self._net[1]:
+            self.net = tuple(max(0, new - old) / (now - self._net[1]) for new, old in zip(got, self._net[0]))
+        self._net = (got, now)
 
     def _calendar(self):
         self.event = self.calendar.next_event() if self.calendar_on else None
