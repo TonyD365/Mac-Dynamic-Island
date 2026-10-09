@@ -8,13 +8,16 @@ import json
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 import threading
 import time
 
 from AppKit import NSRunningApplication
+from Foundation import NSURL, NSProcessInfo
 
 import calendar_events
+import notifications
 
 
 class _Addr(ctypes.Structure):
@@ -93,6 +96,7 @@ def mic_in_use():
 
 
 _DEFAULT_OUTPUT = _fourcc("dOut")
+_DEFAULT_INPUT = _fourcc("dIn ")
 _VOLUME = _fourcc("vmvc")
 _MUTE = _fourcc("mute")
 _OUTPUT = _fourcc("outp")
@@ -113,6 +117,67 @@ def _output_prop(selector, ctype, value=None):
     v = ctype(value)
     return not _audio.AudioObjectSetPropertyData(ctypes.c_uint32(dev[0]), ctypes.byref(addr), 0, None,
                                                  ctypes.c_uint32(ctypes.sizeof(v)), ctypes.byref(v))
+
+
+def _input_prop(selector, ctype, value=None):
+    """Read (value=None) or write a property of the current input device (the microphone)."""
+    dev = _audio_get(_SYSTEM_OBJECT, _DEFAULT_INPUT)
+    if not dev or not dev[0]:
+        return None
+    addr = _Addr(selector, _INPUT, 0)
+    if value is None:
+        v = ctype()
+        size = ctypes.c_uint32(ctypes.sizeof(v))
+        err = _audio.AudioObjectGetPropertyData(ctypes.c_uint32(dev[0]), ctypes.byref(addr), 0, None,
+                                                ctypes.byref(size), ctypes.byref(v))
+        return None if err else v.value
+    v = ctype(value)
+    return not _audio.AudioObjectSetPropertyData(ctypes.c_uint32(dev[0]), ctypes.byref(addr), 0, None,
+                                                 ctypes.c_uint32(ctypes.sizeof(v)), ctypes.byref(v))
+
+
+_mic_level = None       # the input level to return to, for microphones that have no mute switch
+
+
+def mic_muted():
+    """Is the microphone silenced? None if there is no microphone."""
+    v = _input_prop(_MUTE, ctypes.c_uint32)
+    if v is not None:
+        return bool(v)
+    level = _input_prop(_VOLUME, ctypes.c_float)
+    return None if level is None else level <= 0.0
+
+
+def set_mic_mute(on):
+    """Silence the microphone for every app, or let it be heard again. True if it worked."""
+    global _mic_level
+    if _input_prop(_MUTE, ctypes.c_uint32) is not None and _input_prop(_MUTE, ctypes.c_uint32, 1 if on else 0):
+        return True
+    level = _input_prop(_VOLUME, ctypes.c_float)        # no mute switch: turn the input level down instead
+    if level is None:
+        return False
+    if on:
+        _mic_level = level if level > 0 else _mic_level
+        return bool(_input_prop(_VOLUME, ctypes.c_float, 0.0))
+    return bool(_input_prop(_VOLUME, ctypes.c_float, _mic_level or 0.7))
+
+
+def disk_free():
+    """Bytes that can still be stored in the home folder's disk (counting space macOS can clear)."""
+    home = os.path.expanduser("~")
+    try:
+        ok, value, _ = NSURL.fileURLWithPath_(home).getResourceValue_forKey_error_(
+            None, "NSURLVolumeAvailableCapacityForImportantUsageKey", None)
+        if ok and value:
+            return int(value)
+    except Exception:
+        pass
+    return shutil.disk_usage(home).free
+
+
+def thermal_state():
+    """0 nominal, 1 fair, 2 serious (macOS is slowing the Mac down), 3 critical."""
+    return int(NSProcessInfo.processInfo().thermalState())
 
 
 def volume():
@@ -489,6 +554,12 @@ class Monitors:
         self.gpu = None
         self.mem = None
         self.net = None          # (bytes received, bytes sent) per second
+        self.mic_muted = None    # the microphone is silenced for every app
+        self.mirror_on = False   # set by the island from the Mirror Notifications setting
+        self.notices = []        # notifications that have just appeared, for the island to show
+        self._noticed = None     # ids of the banners seen on the last look
+        self.disk_free = None    # bytes
+        self.thermal = 0
         self.downloads_on = False    # set by the island from the Download Progress setting
         self.download = None     # {"title", "bytes", "total", "speed", "count"} while a browser is downloading
         self.downloads_done = [] # names of downloads that have just finished, for the island to announce
@@ -506,6 +577,8 @@ class Monitors:
         self._spawn(self._levels, 0.12)
         self._spawn(self._bluetooth, 1.0)    # frequent: a device can drop and rejoin within a couple of seconds
         self._spawn(self._downloads, 1.0)
+        self._spawn(self._notifications, 1.0)
+        self._spawn(self._health, 30.0)
         self._spawn(self._stats, 3.0)
         self._spawn(self._calendar, 30.0)
 
@@ -523,6 +596,7 @@ class Monitors:
     def _devices(self):
         self.cam = camera_in_use()
         self.mic = mic_in_use()
+        self.mic_muted = mic_muted()
 
     def _power(self):
         self.batt, self.ac = battery()
@@ -548,6 +622,18 @@ class Monitors:
         if self.bt is None or now < self._bt_until or now >= self._bt_next:
             self.bt = bluetooth()
             self._bt_next = now + BT_RESCAN
+
+    def _notifications(self):
+        if not self.mirror_on or not notifications.trusted():
+            self._noticed = None
+            return
+        found = notifications.banners()
+        self.notices.extend(notifications.fresh(found, self._noticed))
+        self._noticed = set(found)
+
+    def _health(self):
+        self.disk_free = disk_free()
+        self.thermal = thermal_state()
 
     def _downloads(self):
         if not self.downloads_on:

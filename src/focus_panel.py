@@ -228,17 +228,22 @@ class FocusPanel:
         self.field = None
         gray = NSColor.secondaryLabelColor()
         rows = [self.label("TIMER", 10.5, gray, bold=True, height=18)]
-        if island.timer_end:
-            rows.append(self.label("%s left" % island.countdown(island.timer_end), 13, bold=True, height=22))
-            rows.append(self.row_button("Cancel Timer", "", lambda: (island.cancel_timer(), self.close())))
-            self.layout(rows)
-            return
+        for timer in list(island.timers):       # the ones running: click one to cancel it
+            rows.append(self.row_button("%s  %s" % (island.countdown(timer["end"]), timer["name"] or "Timer"),
+                                        "click to cancel", lambda timer=timer: (island.cancel_timer(timer),
+                                                                                self.show_timer())))
+        if island.timers:
+            rows.append(self.separator())
+        self.timer_name = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, WIDTH - 2 * PAD, 22))
+        self.timer_name.setPlaceholderString_("Name (optional), e.g. Tea")
+        rows.append((self.timer_name, 26.0))
         presets = NSView.alloc().initWithFrame_(NSMakeRect(PAD, 0, WIDTH - 2 * PAD, 30))
         choices = (1, 3, 5, 10, 15, 30)
         width = (WIDTH - 2 * PAD) / len(choices)
         for index, minutes in enumerate(choices):
             b = NSButton.buttonWithTitle_target_action_(
-                str(minutes), self.bind(lambda m=minutes: (island.start_timer(m), self.close())), "fire:")
+                str(minutes), self.bind(lambda m=minutes: (island.start_timer(m, self.named()), self.close())),
+                "fire:")
             b.setFrame_(NSMakeRect(index * width, 0, width, 30))
             presets.addSubview_(b)
         rows.append(self.label("Minutes  ·  click one to start", 11.5, gray, height=20))
@@ -253,10 +258,13 @@ class FocusPanel:
         self.panel.makeFirstResponder_(self.field)
         self.field.selectText_(None)
 
+    def named(self):
+        return str(self.timer_name.stringValue()).strip()[:24]
+
     def start_timer(self):
         minutes = self.minutes()
         if minutes is None:
             self.field.selectText_(None)
             return
-        self.island.start_timer(minutes)
+        self.island.start_timer(minutes, self.named())
         self.close()

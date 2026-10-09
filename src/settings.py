@@ -18,6 +18,8 @@ DEFAULTS = {
     "scroll_volume": True,  # scroll on the island to change the volume
     "stats": True,          # CPU / memory line when nothing else is going on
     "downloads": True,      # progress of browser downloads (reads the Downloads folder)
+    "health": True,         # warnings when the disk is nearly full or the Mac is overheating
+    "mirror": False,        # show other apps' notifications (needs Accessibility access)
     "background": "",       # "", a preset name, or "custom"
     "background_custom": "",
     "background_dim": 0.45,

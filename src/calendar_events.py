@@ -2,6 +2,7 @@
 
 Nothing is read until the user switches Calendar Events on and macOS has granted access.
 """
+import re
 import time
 
 try:
@@ -14,6 +15,22 @@ from Foundation import NSDate
 LOOK_AHEAD = 12 * 3600              # how far ahead to look for the next event
 JUST_STARTED = 5 * 60               # an event that began this recently still counts as "next"
 _AUTHORIZED = (3,)                  # EKAuthorizationStatusAuthorized / FullAccess
+
+
+JOIN_WITHIN = 5 * 60                # offer to join a meeting this long before it starts
+MEETING = re.compile(
+    r"https?://[^\s<>\"']*(?:zoom\.us/(?:j|my|w|s)/|teams\.microsoft\.com/|teams\.live\.com/meet/|meet\.google\.com/"
+    r"|meeting\.tencent\.com/|voovmeeting\.com/|webex\.com/|feishu\.cn/j/|larksuite\.com/j/|whereby\.com/"
+    r"|facetime\.apple\.com/join)[^\s<>\"']*", re.IGNORECASE)
+
+
+def meeting_link(*texts):
+    """The first video-meeting address found in an event's URL, location or notes; None if there is none."""
+    for text in texts:
+        found = MEETING.search(text or "")
+        if found:
+            return found.group(0).rstrip(".,;:)")
+    return None
 
 
 class Calendar:
@@ -41,7 +58,7 @@ class Calendar:
             self.store.requestAccessToEntityType_completion_(0, finished)
 
     def next_event(self, now=None):
-        """{'id', 'title', 'start', 'end'} (times as seconds since 1970) of the next timed event, or None."""
+        """{'id', 'title', 'start', 'end', 'link'} (times as seconds since 1970) of the next timed event, or None."""
         if not self.authorized():
             return None
         now = time.time() if now is None else now
@@ -54,7 +71,9 @@ class Calendar:
                 continue
             found.append({"id": str(event.eventIdentifier()), "title": str(event.title() or "Event"),
                           "start": event.startDate().timeIntervalSince1970(),
-                          "end": event.endDate().timeIntervalSince1970()})
+                          "end": event.endDate().timeIntervalSince1970(),
+                          "link": meeting_link(str(event.URL().absoluteString() or "") if event.URL() else "",
+                                               str(event.location() or ""), str(event.notes() or ""))})
         return pick_next(found, now)
 
 

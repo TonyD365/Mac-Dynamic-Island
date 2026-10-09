@@ -9,9 +9,10 @@ import errno
 import os
 import shutil
 import subprocess
+import time
 import uuid
 
-from AppKit import NSURL
+from AppKit import NSURL, NSBitmapImageFileTypePNG, NSBitmapImageRep
 
 FOLDER = os.path.expanduser("~/Library/Application Support/DynamicIsland/Shelf")
 
@@ -86,6 +87,39 @@ def store(values, paths):
         values["shelf_origins"][target] = os.path.dirname(path.rstrip("/"))
         stored += 1
     return stored, failed
+
+
+def loose_from(pasteboard):
+    """What a drag carries when it has no files: ("image", PNG bytes), ("text", str) or None."""
+    for kind in ("public.png", "public.tiff"):
+        data = pasteboard.dataForType_(kind)
+        if data is None or not data.length():
+            continue
+        if kind != "public.png":
+            picture = NSBitmapImageRep.imageRepWithData_(data)
+            data = picture.representationUsingType_properties_(NSBitmapImageFileTypePNG, {}) if picture else None
+        if data is not None:
+            return ("image", bytes(data))
+    text = pasteboard.stringForType_("public.utf8-plain-text")
+    return ("text", str(text)) if text and str(text).strip() else None
+
+
+def store_loose(values, item, now=None):
+    """Keep dragged text or a dragged picture on the Shelf as a file of its own. Returns what store does."""
+    kind, content = item
+    stamp = time.strftime("%Y-%m-%d %H.%M.%S", time.localtime(now))
+    name = ("Text %s.txt" if kind == "text" else "Image %s.png") % stamp
+    holder = os.path.join(FOLDER, uuid.uuid4().hex[:8])
+    target = os.path.join(holder, name)
+    try:
+        os.makedirs(holder)
+        with open(target, "wb") as f:
+            f.write(content.encode("utf-8") if kind == "text" else content)
+    except OSError as e:
+        return 0, [(name, e.strerror or "It could not be saved")]
+    values["shelf"].append(target)
+    values["shelf_origins"][target] = os.path.expanduser("~/Desktop")     # where Put Back sends it
+    return 1, []
 
 
 def put_back(values, stored):
