@@ -189,6 +189,26 @@ def set_brightness(display, level):
                                                           ctypes.c_float(max(0.0, min(1.0, level)))) == 0
 
 
+def low_power():
+    """Is Low Power Mode on?"""
+    if os.environ.get("DI_FAKE_LOW_POWER"):
+        return os.environ["DI_FAKE_LOW_POWER"] == "1"
+    info = NSProcessInfo.processInfo()
+    return bool(info.isLowPowerModeEnabled()) if hasattr(info, "isLowPowerModeEnabled") else False
+
+
+def battery_look(percent, charging, low_power_mode):
+    """The colour of the battery mark, as macOS and iOS do it: yellow in Low Power Mode, green when
+    full, red when nearly empty and not charging, otherwise white (also while charging)."""
+    if low_power_mode:
+        return "yellow"
+    if percent is not None and percent >= 100:
+        return "green"
+    if percent is not None and percent <= 20 and not charging:
+        return "red"
+    return "white"
+
+
 THERMAL_NAMES = ("Normal", "Fair", "Serious", "Critical")
 
 
@@ -423,6 +443,10 @@ def memory_used():
 
 def battery():
     """Return (percent or None, on_ac)."""
+    fake = os.environ.get("DI_FAKE_BATTERY")        # for trying the looks out: DI_FAKE_BATTERY=60,1
+    if fake:
+        percent, charging = fake.split(",")
+        return int(percent), charging == "1"
     try:
         out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, encoding="utf-8", errors="replace", timeout=3).stdout
     except Exception:
@@ -583,6 +607,7 @@ class Monitors:
         self.mic = False
         self.batt = None
         self.ac = None
+        self.low_power = False
         self.music = None
         self.music_hold = 0.0    # ignore readings until then: a command was just sent
         self.calendar = calendar_events.Calendar()
@@ -646,6 +671,7 @@ class Monitors:
 
     def _power(self):
         self.batt, self.ac = battery()
+        self.low_power = low_power()
 
     def _music(self):
         reading = now_playing()
