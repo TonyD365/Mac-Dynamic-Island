@@ -264,6 +264,8 @@ def settings_entries(island):
             entry("set:mirror", "bell.badge.fill", "Mirror Notifications", island.mirror_status,
                   island.toggle_mirror, lambda: S["mirror"]),
             toggle("slider.horizontal.3", "Volume & Brightness Bar", "hud"),
+            entry("set:replace_hud", "rectangle.slash", "Hide the System's Volume Panel", island.hud_keys_status,
+                  island.toggle_hud_keys, lambda: S["replace_hud"]),
             toggle("hand.wave.fill", "Welcome Animation", "welcome"),
             entry("set:calendar", "calendar", "Calendar Events", island.calendar_status, island.toggle_calendar,
                   lambda: S["calendar"]),

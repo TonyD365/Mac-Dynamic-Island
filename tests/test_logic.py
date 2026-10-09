@@ -19,6 +19,7 @@ import focus                # noqa: E402
 import menu                 # noqa: E402
 import ring                 # noqa: E402
 import shelf                # noqa: E402
+import hud_keys             # noqa: E402
 import monitors             # noqa: E402
 import notifications        # noqa: E402
 import screen               # noqa: E402
@@ -212,6 +213,15 @@ class NewFeatureTests(unittest.TestCase):
         self.assertEqual(monitors.parse_busiest(" 181.5 Google Chrome Helper\n  3.0 Finder\n"),
                          ("Google Chrome Helper", 181.5))
         self.assertIsNone(monitors.parse_busiest(""))
+
+    def test_media_keys_are_decoded_and_stepped(self):
+        self.assertEqual(hud_keys.decode((hud_keys.SOUND_UP << 16) | 0xA00), (hud_keys.SOUND_UP, True))
+        self.assertEqual(hud_keys.decode((hud_keys.MUTE << 16) | 0xB00), (hud_keys.MUTE, False))
+        self.assertEqual(hud_keys.stepped(0.375, 1), 0.4375)
+        self.assertEqual(hud_keys.stepped(0.40, 1), 0.4375)          # off the marks: lands on the next one
+        self.assertEqual(hud_keys.stepped(0.03, -1), 0.0)
+        self.assertEqual(hud_keys.stepped(1.0, 1), 1.0)
+        self.assertEqual(hud_keys.stepped(0.5, 1, fine=True), 0.515625)
 
     def test_times_of_day_are_tidied(self):
         self.assertEqual([focus.clean_time(t) for t in ("9:5", "09.30", "0905", "930", " 23:59 ")],

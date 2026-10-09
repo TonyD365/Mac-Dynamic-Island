@@ -30,6 +30,7 @@ import custom_buttons
 import subprocess
 
 import focus
+import hud_keys
 import notifications
 from AppKit import NSApplication, NSSharingService
 import focus_editor
@@ -163,6 +164,8 @@ class Island:
         self.about_window = about.About(self.check_for_updates)
         self.tour = tour.Tour(self)
         self.timers = []              # countdown timers running: [{"name", "end"}]
+        self.key_tap = hud_keys.KeyTap(lambda: self.monitors.display_id)
+        self.tap_tried = 0.0          # when catching the volume keys was last attempted
         self.note = None              # the mirrored notification on show: {app, title, body, until}
         self.body_action = None       # what a click on the island's text does right now, if anything
         self.joined = None            # id of the calendar event whose meeting was opened
@@ -1073,6 +1076,19 @@ class Island:
         if self.settings["mirror"] and not notifications.trusted():
             notifications.trusted(prompt=True)      # macOS shows its own request, with a link to the setting
 
+    def hud_keys_status(self):
+        if not self.settings["replace_hud"]:
+            return "Off  ·  macOS shows its own panel too"
+        return "On  ·  keyboard keys only" if self.key_tap.running() else "Waiting for Accessibility access"
+
+    def toggle_hud_keys(self):
+        self.settings["replace_hud"] = not self.settings["replace_hud"]
+        settings.save(self.settings)
+        if not self.settings["replace_hud"]:
+            self.key_tap.stop()
+        elif not self.key_tap.start():
+            notifications.trusted(prompt=True)      # macOS shows its own request, with a link to the setting
+
     def airdrop(self, paths):
         urls = [NSURL.fileURLWithPath_(p) for p in paths if os.path.exists(p)]
         service = NSSharingService.sharingServiceNamed_("com.apple.share.AirDrop.send")
@@ -1743,6 +1759,9 @@ class Island:
 
         raw.downloads_on = S["downloads"]
         raw.mirror_on = S["mirror"]
+        if S["replace_hud"] and not self.key_tap.running() and now - self.tap_tried > 3.0:
+            self.tap_tried = now                    # keeps trying until Accessibility access is granted
+            self.key_tap.start()
         while raw.notices:
             notice = raw.notices.pop(0)
             if S["mirror"] and not self.menu_open and not self.tour.active:

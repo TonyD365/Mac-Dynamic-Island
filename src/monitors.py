@@ -181,6 +181,14 @@ def thermal_state():
     return int(fake) if fake else int(NSProcessInfo.processInfo().thermalState())
 
 
+def set_brightness(display, level):
+    """Set the given display's brightness, 0..1. True if it worked."""
+    if _display_services is None or not display:
+        return False
+    return _display_services.DisplayServicesSetBrightness(ctypes.c_uint32(display),
+                                                          ctypes.c_float(max(0.0, min(1.0, level)))) == 0
+
+
 THERMAL_NAMES = ("Normal", "Fair", "Serious", "Critical")
 
 

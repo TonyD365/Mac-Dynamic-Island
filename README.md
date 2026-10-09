@@ -31,6 +31,7 @@ Click it for a ring of action buttons.
 - Focus modes that start by themselves, at a time of day or when an app opens
 - Warnings when storage is nearly full or the Mac is overheating
 - Optional: mirror other apps' notifications (off by default; needs Accessibility access)
+- Optional: hide macOS's own volume / brightness panel when you use the keyboard keys (same access)
 - Green and orange dots when an app is using the camera or microphone
 - Now playing from any app — music players and browser videos alike — with play / pause, skip and a
   progress bar you can drag to seek

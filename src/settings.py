@@ -19,6 +19,7 @@ DEFAULTS = {
     "stats": True,          # CPU / memory line when nothing else is going on
     "downloads": True,      # progress of browser downloads (reads the Downloads folder)
     "health": True,         # warnings when the disk is nearly full or the Mac is overheating
+    "replace_hud": False,   # catch the volume / brightness keys so macOS's own panel stays away (same access)
     "mirror": False,        # show other apps' notifications (needs Accessibility access)
     "background": "",       # "", a preset name, or "custom"
     "background_custom": "",
