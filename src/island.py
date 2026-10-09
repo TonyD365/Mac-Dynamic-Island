@@ -64,6 +64,8 @@ SHELF_W = 150.0       # the drawer that slides out on the right while the Shelf 
 SHELF_EAR = 20.0      # extra width beside the notch for the folder mark, when compact
 SHELF_ROWS = 3        # files listed in the drawer at once; scroll for the rest
 SHELF_ROW_H = 19.0
+NOTE_H = 88.0           # the panel that drops below the island to show a notification in full
+NOTE_SECONDS = 6.0
 LOW_DISK = 10e9         # warn when less than this many bytes are free
 INNER_SLOTS = 8       # buttons visible at once in each ring; more are reached by turning it
 OUTER_SLOTS = 9
@@ -161,6 +163,7 @@ class Island:
         self.about_window = about.About(self.check_for_updates)
         self.tour = tour.Tour(self)
         self.timers = []              # countdown timers running: [{"name", "end"}]
+        self.note = None              # the mirrored notification on show: {app, title, body, until}
         self.body_action = None       # what a click on the island's text does right now, if anything
         self.joined = None            # id of the calendar event whose meeting was opened
         self.drag_loose = None        # text or a picture in the drag now under way, when it has no files
@@ -364,7 +367,7 @@ class Island:
         # Room for the drawer on the right, and for the buttons' spring overshoot, or the window
         # edge clips them mid-bounce. (The window is transparent and click-through, so extra width is free.)
         self.win_w = 2 * math.ceil(max(hx + GLOW_PAD, (hx + SHELF_W + outer_offset) * 1.04 + MENU_R + 10))
-        self.win_h = math.ceil(max(hy + GLOW_PAD, (hy + outer_offset) * 1.06 + MENU_R + 10))
+        self.win_h = math.ceil(max(hy + NOTE_H + GLOW_PAD, (hy + outer_offset) * 1.06 + MENU_R + 10))
         self.panel.setFrame_display_(
             NSMakeRect(self.cx - self.win_w / 2, self.top - self.win_h, self.win_w, self.win_h), True)
         self.build_layers()
@@ -549,6 +552,20 @@ class Island:
         w = self.exp_w
         left = -w / 2 + 18
         base = -self.nh
+        # The notification panel: hangs below the usual content, which stays as it is.
+        self.note_group = self.group(self.island)
+        self.note_group.setOpacity_(0)
+        nx, nw, top = -self.exp_w / 2 + 16, self.exp_w - 32, -self.exp_h
+        line = CALayer.layer()
+        line.setFrame_(NSMakeRect(nx, top - 1, nw, 1))
+        line.setBackgroundColor_(FAINT.CGColor())
+        self.note_group.addSublayer_(line)
+        self.note_app = self.text_layer(self.note_group, nx, top - 13, nw, 8.5, GRAY, "left", NSFontWeightBold)
+        self.note_title = self.text_layer(self.note_group, nx, top - 28, nw, 12, WHITE, "left")
+        self.note_body = self.text_layer(self.note_group, nx, top - 59, nw, 10.5, GRAY, "left")
+        self.note_body.setWrapped_(True)                # up to three lines, then an ellipsis
+        self.note_body.setFrame_(NSMakeRect(nx, top - NOTE_H + 8, nw, 42))
+
         self.detail = self.group(self.island)
         full = NSMakeRect(-w / 2, -self.exp_h, w, self.exp_h)
         self.bg = CALayer.layer()
@@ -804,6 +821,9 @@ class Island:
             return
         x = point.x - self.win_w / 2
         y = point.y - self.win_h
+        if self.note and y < -self.exp_h:
+            self.note = None                        # a click on the notification puts it away
+            return
         if self.tour.active:
             half = self.nh / 2
             if abs(x - self.lx) <= 24 and abs(y - self.mid) <= half:
@@ -1025,6 +1045,14 @@ class Island:
         self.toast("Microphone muted" if muted else "Microphone on",
                    "No app can hear you" if muted else "Apps can hear you again", ORANGE if muted else GREEN, 2.0)
         self.update_menu()
+
+    def show_note(self, notice, now):
+        """Drop a panel below the island with the whole notification; the island itself carries on as usual."""
+        self.note = dict(notice, until=now + NOTE_SECONDS)
+        self.set_text(self.note_app, notice["app"].upper())
+        self.set_text(self.note_title, notice["title"])
+        self.set_text(self.note_body, notice["body"])
+        self.pulse(WHITE)
 
     def join(self, event):
         self.joined = event["id"]
@@ -1653,15 +1681,22 @@ class Island:
         if self.ticks % 5 == 0 or self.mode is None:
             self.refresh(now)
 
-        mode = "expanded" if (hover or self.menu_open or now < self.peek_until) else "compact"
+        if self.note and (now >= self.note["until"] or self.menu_open or self.tour.active):
+            self.note = None
+        elif self.note and on_island:
+            self.note["until"] = max(self.note["until"], now + 1.5)     # stays while it is being read
+        mode = "expanded" if (hover or self.menu_open or now < self.peek_until or self.note) else "compact"
+        extra = min(NOTE_H, self.win_h - GLOW_PAD - self.exp_h) if self.note else 0.0
         drawer = self.drawer_w()
         if drawer != self.ring_ext:
             self.layout_rings(drawer)               # the rings step aside for the drawer
         ext = drawer if mode == "expanded" else (SHELF_EAR if self.settings["shelf"] else 0.0)
-        if (mode, ext) != self.shape_key:
-            self.shape_key = (mode, ext)
+        if (mode, ext, extra) != self.shape_key:
+            grew = self.shape_key is None or extra > self.shape_key[2]
+            self.shape_key = (mode, ext, extra)
+            self.note_group.setOpacity_(1 if extra else 0)
             if mode == "expanded":
-                self.set_shape(self.exp_w, self.exp_h, 20, bounce=mode != self.mode, ext=ext)
+                self.set_shape(self.exp_w, self.exp_h + extra, 20, bounce=mode != self.mode or grew, ext=ext)
             else:
                 self.set_shape(self.compact_w, self.nh, 11, bounce=False, ext=ext)
             self.mode = mode
@@ -1709,7 +1744,9 @@ class Island:
         raw.mirror_on = S["mirror"]
         while raw.notices:
             notice = raw.notices.pop(0)
-            if S["mirror"]:
+            if S["mirror"] and not self.menu_open and not self.tour.active:
+                self.show_note(notice, now)
+            elif S["mirror"]:
                 self.toast(notice["title"], notice["body"], WHITE, 4.5)
         if S["health"]:
             if raw.disk_free is not None and raw.disk_free < LOW_DISK and now - self.disk_warned > 6 * 3600:
