@@ -13,6 +13,7 @@ import time
 import uuid
 
 from AppKit import NSURL, NSBitmapImageFileTypePNG, NSBitmapImageRep
+from Foundation import NSFileManager
 
 FOLDER = os.path.expanduser("~/Library/Application Support/DynamicIsland/Shelf")
 
@@ -36,6 +37,21 @@ def _move(source, target):
         shutil.move(source, target)
 
 
+def _copy(source, target):
+    if os.path.isdir(source) and not os.path.islink(source):
+        shutil.copytree(source, target, symlinks=True)
+    else:
+        shutil.copy2(source, target, follow_symlinks=False)
+
+
+def _discard(path):
+    """Put a copy the Shelf made into the Trash (never deleted outright)."""
+    done, _, _ = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(
+        NSURL.fileURLWithPath_(path), None, None)
+    if not done:
+        raise OSError(errno.EPERM, "It could not be moved to the Trash")
+
+
 def _free_name(folder, name):
     """A name that is not taken in `folder`: 'report.pdf', then 'report 2.pdf', 'report 3.pdf'..."""
     stem, ext = os.path.splitext(name)
@@ -50,6 +66,8 @@ def _drop_entry(values, stored):
     if stored in values["shelf"]:
         values["shelf"].remove(stored)
     values["shelf_origins"].pop(stored, None)
+    if stored in values.get("shelf_copies", ()):
+        values["shelf_copies"].remove(stored)
     holder = os.path.dirname(stored)
     if _inside(holder, FOLDER) and os.path.realpath(holder) != os.path.realpath(FOLDER):
         try:
@@ -80,9 +98,19 @@ def store(values, paths):
             except OSError:
                 pass
             protected = e.errno in (errno.EACCES, errno.EPERM, errno.EROFS)
-            failed.append((name, "macOS does not allow moving it" if protected
-                           else (e.strerror or "It could not be moved")))
-            continue
+            copied = False
+            if protected:                   # it may not be moved, but it can often still be read:
+                try:                        # keep a copy on the Shelf and leave the original alone
+                    os.makedirs(holder, exist_ok=True)
+                    _copy(path, target)
+                    copied = True
+                except OSError:
+                    shutil.rmtree(holder, ignore_errors=True)       # only ever our own half-made copy
+            if not copied:
+                failed.append((name, "macOS does not allow moving or copying it" if protected
+                               else (e.strerror or "It could not be moved")))
+                continue
+            values.setdefault("shelf_copies", []).append(target)
         values["shelf"].append(target)
         values["shelf_origins"][target] = os.path.dirname(path.rstrip("/"))
         stored += 1
@@ -134,6 +162,11 @@ def put_back(values, stored):
     if not os.path.lexists(stored):
         _drop_entry(values, stored)
         return None
+    original = os.path.join(origin, os.path.basename(stored))
+    if stored in values.get("shelf_copies", ()) and os.path.lexists(original):
+        _discard(stored)                    # the original never left: the Shelf's copy is the spare one
+        _drop_entry(values, stored)
+        return original
     if not os.path.isdir(origin):
         origin = os.path.expanduser("~/Desktop")
     target = _free_name(origin, os.path.basename(stored))

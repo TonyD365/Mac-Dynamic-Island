@@ -166,6 +166,7 @@ class Island:
         self.timers = []              # countdown timers running: [{"name", "end"}]
         self.key_tap = hud_keys.KeyTap(lambda: self.monitors.display_id)
         self.tap_tried = 0.0          # when catching the volume keys was last attempted
+        self.copies_known = set(self.settings["shelf_copies"])     # Shelf items already announced as copies
         self.note = None              # the mirrored notification on show: {app, title, body, until}
         self.body_action = None       # what a click on the island's text does right now, if anything
         self.joined = None            # id of the calendar event whose meeting was opened
@@ -1168,6 +1169,7 @@ class Island:
         while self.shelf_done:
             kind, result = self.shelf_done.pop(0)
             settings.save(self.settings)
+            self.copies_known, known = set(self.settings["shelf_copies"]), self.copies_known
             count = len(self.settings["shelf"])
             kept = "%d item%s on the Shelf" % (count, "" if count == 1 else "s")
             if kind == "store":
@@ -1177,6 +1179,8 @@ class Island:
                     self.toast("Couldn't move %s" % name, reason, ORANGE, 4.0)
                 elif failed:
                     self.toast("Moved %d to the Shelf" % stored, "%d could not be moved" % len(failed), ORANGE, 4.0)
+                elif stored and set(self.settings["shelf_copies"]) - known:
+                    self.toast("Copied to the Shelf", "The original could not be moved, so it stays", BLUE, 4.0)
                 elif stored:
                     self.toast("Moved to the Shelf", kept, BLUE)
                 else:
