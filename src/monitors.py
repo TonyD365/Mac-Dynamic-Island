@@ -705,13 +705,18 @@ class Monitors:
             return
         found = notifications.banners()
         new = notifications.fresh(found, self._noticed)
+        for notice in new:
+            if notice["pictures"]:
+                time.sleep(0.5)             # until the banner has finished sliding in
+                notice["picture"] = notifications.picture(notice)
         self.notices.extend(new)
         self._noticed = set(found)
         # The island shows it now, so the banner can go. A banner ignores this while it is still
         # sliding in, so keep asking on each look until it has gone.
         closing = getattr(self, "_closing", set())
         if self.mirror_hide:
-            closing |= {notice["id"] for notice in new}
+            # One with buttons is waiting for an answer, which only the banner itself can take: it stays.
+            closing |= {notice["id"] for notice in new if not notice["actions"]}
             for ident in closing & found.keys():
                 notifications.act(found[ident]["element"], "Close")
         self._closing = closing & found.keys() if self.mirror_hide else set()
