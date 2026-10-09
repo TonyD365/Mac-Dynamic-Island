@@ -614,6 +614,33 @@ class ShelfTests(unittest.TestCase):
         self.assertTrue(all(os.path.exists(p) for p in paths))
         self.assertEqual(self.values["shelf"], [])
 
+    def test_what_cannot_be_moved_is_copied_instead(self):
+        path = self.make(self.home, "locked.txt")
+
+        def refuse(source, target):
+            raise PermissionError(1, "Operation not permitted")
+        binned = []
+        with Stub(shelf, "_move", refuse), Stub(shelf, "_discard", lambda p: (binned.append(p), os.remove(p))):
+            self.assertEqual(shelf.store(self.values, [path]), (1, []))
+            stored = self.values["shelf"][0]
+            self.assertTrue(os.path.exists(path) and os.path.exists(stored))       # both are there
+            self.assertEqual(self.values["shelf_copies"], [stored])
+        with Stub(shelf, "_discard", lambda p: (binned.append(p), os.remove(p))):
+            self.assertEqual(shelf.put_back(self.values, stored), path)            # no "locked 2.txt"
+        self.assertEqual((binned, self.values["shelf"], self.values["shelf_copies"]), ([stored], [], []))
+        self.assertEqual(os.listdir(self.home).count("locked.txt"), 1)
+
+    def test_a_copy_goes_back_properly_if_the_original_has_gone(self):
+        path = self.make(self.home, "locked.txt")
+
+        def refuse(source, target):
+            raise PermissionError(1, "Operation not permitted")
+        with Stub(shelf, "_move", refuse):
+            shelf.store(self.values, [path])
+        os.remove(path)
+        self.assertEqual(shelf.put_back(self.values, self.values["shelf"][0]), path)
+        self.assertTrue(os.path.exists(path))
+
     def test_put_back_just_one(self):
         shelf.store(self.values, [self.make(self.home, "a.txt"), self.make(self.other, "b.txt")])
         first, second = self.values["shelf"]
