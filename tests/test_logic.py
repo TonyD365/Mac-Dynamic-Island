@@ -461,6 +461,25 @@ class CategoryTests(unittest.TestCase):
         values.update(changes)
         return values
 
+    def test_older_settings_gain_an_uncategorized_group_with_the_microphone(self):
+        values = self.fresh(categories=[{"name": "Media", "icon": "play.fill", "items": ["play", "mic", "mute"]}],
+                            known_items=["play", "mic", "mute"])
+        self.assertTrue(menu.normalize(values))
+        loose = [c for c in values["categories"] if c.get("loose")]
+        self.assertEqual([(c["name"], c["items"]) for c in loose], [(menu.LOOSE_NAME, ["mic"])])
+        self.assertNotIn("mic", values["categories"][0]["items"])
+        self.assertFalse(menu.normalize(values))                # and it settles: nothing more to change
+
+    def test_a_button_moved_out_of_uncategorized_stays_out(self):
+        values = self.fresh()
+        menu.normalize(values)
+        loose = next(c for c in values["categories"] if c.get("loose"))
+        loose["items"].remove("mic")
+        values["categories"][0]["items"].append("mic")
+        menu.normalize(values)
+        self.assertEqual(loose["items"], [])
+        self.assertIn("mic", values["categories"][0]["items"])
+
     def test_first_run_deals_every_button_into_its_category(self):
         values = self.fresh()
         self.assertTrue(menu.normalize(values))

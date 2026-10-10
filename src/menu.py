@@ -16,14 +16,17 @@ import monitors
 import settings
 
 # The built-in buttons and the category each one starts in.
+LOOSE_NAME = "Uncategorized"
 DEFAULT_CATEGORIES = [
     {"name": "Time", "icon": "clock.fill", "items": ["focus", "timer", "stopwatch"]},
-    {"name": "Media", "icon": "play.fill", "items": ["previous", "play", "next", "mute", "mic"]},
+    {"name": "Media", "icon": "play.fill", "items": ["previous", "play", "next", "mute"]},
     {"name": "System", "icon": "switch.2", "items": ["dark", "awake", "lock", "sleep"]},
     {"name": "Tools", "icon": "wrench.and.screwdriver.fill", "items": ["screenshot", "color", "calculator"]},
     {"name": "Files", "icon": "folder.fill", "items": ["downloads", "desktop", "documents", "applications"]},
     {"name": "Apps", "icon": "square.grid.2x2.fill", "items": ["activity", "system_settings", "terminal"]},
     {"name": "My Buttons", "icon": "star.fill", "items": []},
+    # Not a category of its own: its buttons sit on the inner ring directly, beside the categories.
+    {"name": LOOSE_NAME, "icon": "square.dashed", "items": ["mic"], "loose": True},
 ]
 CUSTOM_CATEGORY = "My Buttons"      # where newly made custom buttons appear
 CATEGORY_ICONS = (
@@ -58,6 +61,13 @@ def normalize(values):
 
     if not values["categories"] and not values["known_items"]:          # first run
         values["categories"] = copy.deepcopy(DEFAULT_CATEGORIES)
+
+    if not any(c.get("loose") for c in values["categories"]):
+        # Settings from before there was an Uncategorized group: add it, and move the microphone
+        # button there from wherever an earlier version put it.
+        for category in values["categories"]:
+            category["items"] = [item for item in category.get("items", []) if item != "mic"]
+        values["categories"].append({"name": LOOSE_NAME, "icon": "square.dashed", "items": ["mic"], "loose": True})
 
     seen = set()
     for category in values["categories"]:
@@ -211,14 +221,22 @@ def actions(island):
 
 
 def main_entries(island):
-    """Inner ring: the categories that have something in them, then Settings."""
+    """Inner ring: the categories that have something in them (the Uncategorized one's buttons
+    directly, without a category round them), then Settings."""
     available = actions(island)
     result = []
+    event = island.joinable
+    if event is not None and not island.locked:         # a meeting about to start: one click to join
+        result.append(entry("join", "video.fill", "Join Meeting", lambda: event["title"],
+                            lambda: island.join(event)))
     for index, category in enumerate(island.settings["categories"]):
         children = [available[item] for item in category["items"] if item in available]
         if island.locked:               # on the lock screen only the harmless buttons remain
             children = [c for c in children if c.safe]
         if not children:
+            continue
+        if category.get("loose"):
+            result.extend(children)
             continue
         result.append(entry("category:%d" % index, category.get("icon", "star.fill"), category.get("name", ""),
                             lambda n=len(children): "%d button%s" % (n, "" if n == 1 else "s"),
