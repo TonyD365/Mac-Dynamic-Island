@@ -170,7 +170,7 @@ class Island:
         self.tap_tried = 0.0          # when catching the volume keys was last attempted
         self.copies_known = set(self.settings["shelf_copies"])     # Shelf items already announced as copies
         self.note = None              # the mirrored notification on show: {app, title, body, until}
-        self.body_action = None       # what a click on the island's text does right now, if anything
+        self.joinable = None          # the calendar event whose meeting can be joined right now
         self.joined = None            # id of the calendar event whose meeting was opened
         self.drag_loose = None        # text or a picture in the drag now under way, when it has no files
         self.drag_zone = "shelf"      # where the drag would land: "shelf" or "airdrop"
@@ -631,7 +631,6 @@ class Island:
         self.sub_narrow = m_right - mx - 3 * 22 - 5  # leave room for the music controls
         self.sub_is_narrow = False
         self.sub_text = self.text_layer(self.detail, mx, base - 33, self.sub_wide, 10, GRAY, "left")
-        self.body_box = (mx, base - 42, mx + self.sub_wide, base - 6)       # the two lines of text, for clicks
         self.bar = self.group(self.detail)
         self.bar_w = self.sub_wide - 4
         track = CALayer.layer()
@@ -901,11 +900,6 @@ class Island:
             if abs(x - bx) <= half and abs(y - by) <= half and enabled():
                 callback()
                 return
-        left, low, right, high = self.body_box
-        if self.body_action and not self.menu_open and left <= x <= right and low <= y <= high:
-            self.body_action()              # "click to join", "click to mute"
-            self.refresh(time.time())
-            return
         if self.menu_open:
             self.close_menu()
         else:
@@ -1305,7 +1299,8 @@ class Island:
         dragging = dragging and bool(self.drag_paths or self.drag_loose)
 
         # A generous target: the whole expanded island and its drawer, with some margin.
-        near = (-self.exp_w / 2 - 20 <= x <= self.exp_w / 2 + SHELF_W + 20) and y >= -self.exp_h - 16
+        # ... and no higher than the island's own top edge: a display arranged above this one is not it.
+        near = (-self.exp_w / 2 - 20 <= x <= self.exp_w / 2 + SHELF_W + 20) and -self.exp_h - 16 <= y <= 6
         over = dragging and near
         if over:
             self.peek_until = max(self.peek_until, now + 0.25)      # stay open while the files hover
@@ -1961,8 +1956,7 @@ class Island:
         hud_on = bool(self.hud and now < self.hud[1]) and pointed is None and not self.drag_over \
             and not self.tour.active
         hud_level = 0.0
-        action = None                           # what clicking the two lines of text would do
-        joinable = event if (event is not None and event.get("link") and event["id"] != self.joined
+        joinable = self.joinable = event if (event is not None and event.get("link") and event["id"] != self.joined
                              and event["start"] - now <= calendar_events.JOIN_WITHIN) else None
         self.draw_shelf()
         if self.tour.active:                    # the tour's captions take over the island
@@ -2001,14 +1995,12 @@ class Island:
         elif joinable:
             left = joinable["start"] - now
             title = joinable["title"]
-            sub = ("Starts in %d min" % max(1, round(left / 60)) if left > 0 else "Started") + "  ·  click to join"
-            action = lambda: self.join(joinable)
+            sub = ("Starts in %d min" % max(1, round(left / 60)) if left > 0 else "Started") + "  ·  click for Join"
         elif live:
             title = " + ".join(n for n, on in (("Camera", mon.cam), ("Microphone", mon.mic)) if on) + " in use"
             sub = "Live now"
-            if mon.mic:
-                sub = "Muted  ·  click to unmute" if raw.mic_muted else "Live  ·  click to mute"
-                action = self.toggle_mic
+            if mon.mic and raw.mic_muted:
+                sub = "Microphone muted"
         elif music:
             title, sub = music["title"], music["artist"] or music["app"]
             if self.seeking is not None:        # while dragging, the subtitle shows where you'd land
@@ -2049,7 +2041,6 @@ class Island:
                 sub = "\u2009·\u2009".join("%s %d%%" % (name, round(v * 100)) for name, v in stats if v is not None)
             else:
                 sub = "All quiet"
-        self.body_action = action
         if self.tour.active:
             music = None                    # the tour's captions get the whole middle column
         controls = bool(music and music.get("control"))

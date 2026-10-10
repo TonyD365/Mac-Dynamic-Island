@@ -158,14 +158,16 @@ class Editor:
         self.left.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(self.selected), False)
         self.right.reloadData()
         real = self.is_real(self.selected)
-        self.remove_btn.setEnabled_(real)
-        self.icon.setEnabled_(real)
+        loose = real and bool(self.categories()[self.selected].get("loose"))
+        self.remove_btn.setEnabled_(real and not loose)     # Uncategorized is always there
+        self.icon.setEnabled_(real and not loose)           # ... and has no button of its own to give an icon
         if real:
             symbols = [s for s, _ in menu.CATEGORY_ICONS]
             current = self.categories()[self.selected].get("icon")
             self.icon.selectItemAtIndex_(symbols.index(current) if current in symbols else 0)
         title = self.categories()[self.selected]["name"] if real else "Not shown"
-        self.right_title.setStringValue_("Buttons in “%s”" % title if real else "Buttons that are not in the ring")
+        self.right_title.setStringValue_("Shown on the ring directly, outside any category" if loose
+                                         else "Buttons in “%s”" % title if real else "Buttons that are not in the ring")
 
     def selection_changed(self, kind):
         if kind == "categories" and self.left.selectedRow() >= 0 and self.left.selectedRow() != self.selected:
